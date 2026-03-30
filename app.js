@@ -4,6 +4,9 @@
 const SUPA_URL = 'https://cknkscsglejyccwqkiys.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbmtzY3NnbGVqeWNjd3FraXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MTk3ODQsImV4cCI6MjA5MDM5NTc4NH0.V3eYDnFJHhT4ALNKo66yCr1gwUtzsZtQ_ftToQDx48Y';
 
+const SESION_MINUTOS = 10; // minutos de sesión activa
+let inactividadTimer = null;
+
 async function verificarLicencia() {
   const input = document.getElementById('lic-input');
   const btn   = document.getElementById('lic-btn');
@@ -47,16 +50,16 @@ async function verificarLicencia() {
       btn.disabled = false; btn.textContent = 'Verificar licencia'; return;
     }
 
-    // Calcular días restantes
     const diasRestantes = Math.ceil((vence - hoy) / 86400000);
     const fechaStr = vence.toLocaleDateString('es-CO', {day:'2-digit', month:'long', year:'numeric'});
 
-    // Guardar sesión en localStorage
+    // Guardar sesión con timestamp actual
     localStorage.setItem('catastral_licencia', JSON.stringify({
       codigo: lic.codigo,
       nombre: lic.nombre || '',
       vence:  lic.fecha_vencimiento,
-      validadoEn: new Date().toISOString()
+      validadoEn: new Date().toISOString(),
+      ultimaActividad: new Date().toISOString()
     }));
 
     ok.textContent = '✓ Bienvenido' + (lic.nombre ? ', ' + lic.nombre : '') + ' — Licencia válida hasta ' + fechaStr + ' (' + diasRestantes + ' días)';
@@ -78,16 +81,43 @@ function mostrarErrorLic(msg) {
 function lanzarAppConLicencia() {
   document.getElementById('license-screen').classList.add('hide');
   document.getElementById('upload-screen').style.display = 'flex';
-  // Verificar si hay sesión guardada
+  iniciarTimerInactividad();
   verificarSesionGuardada();
+}
+
+// ── Timer de inactividad ──
+function iniciarTimerInactividad() {
+  const LIMITE_MS = SESION_MINUTOS * 60 * 1000;
+
+  function resetTimer() {
+    clearTimeout(inactividadTimer);
+    // Actualizar última actividad en localStorage
+    const ses = JSON.parse(localStorage.getItem('catastral_licencia') || 'null');
+    if (ses) {
+      ses.ultimaActividad = new Date().toISOString();
+      localStorage.setItem('catastral_licencia', JSON.stringify(ses));
+    }
+    inactividadTimer = setTimeout(() => cerrarSesionPorInactividad(), LIMITE_MS);
+  }
+
+  // Escuchar cualquier interacción del usuario
+  ['mousemove','mousedown','keydown','touchstart','touchmove','click','scroll'].forEach(ev => {
+    document.addEventListener(ev, resetTimer, { passive: true });
+  });
+
+  resetTimer(); // Iniciar el timer
+}
+
+function cerrarSesionPorInactividad() {
+  localStorage.removeItem('catastral_licencia');
+  // Mostrar aviso y volver a pantalla de licencia
+  alert('⏱️ Sesión expirada por inactividad (' + SESION_MINUTOS + ' min).\n\nIngresa tu código nuevamente para continuar.');
+  location.reload();
 }
 
 // Verificar sesión guardada al cargar
 window.addEventListener('DOMContentLoaded', () => {
-  // Botón verificar
   document.getElementById('lic-btn').addEventListener('click', verificarLicencia);
-
-  // Enter para verificar
   document.getElementById('lic-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') verificarLicencia();
   });
@@ -97,15 +127,24 @@ window.addEventListener('DOMContentLoaded', () => {
 
   try {
     const ses = JSON.parse(sesionGuardada);
+
+    // Verificar vencimiento de licencia
     const hoy   = new Date(); hoy.setHours(0,0,0,0);
     const vence = new Date(ses.vence + 'T00:00:00');
-
-    // Si la licencia ya venció localmente, pedir código de nuevo
     if (hoy > vence) { localStorage.removeItem('catastral_licencia'); return; }
 
-    // Siempre re-verificar contra Supabase al abrir la app
-    // Si no hay conexión, se deja pasar con la sesión guardada
+    // Verificar inactividad — si pasaron más de 10 min desde última actividad
+    const ultimaActividad = new Date(ses.ultimaActividad || ses.validadoEn);
+    const minDesde = (new Date() - ultimaActividad) / 60000;
+    if (minDesde >= SESION_MINUTOS) {
+      localStorage.removeItem('catastral_licencia');
+      mostrarErrorLic('Sesión expirada por inactividad. Ingresa tu código nuevamente.');
+      return;
+    }
+
+    // Sesión válida — re-verificar contra Supabase
     reVerificarLicencia(ses.codigo);
+
   } catch(e) {
     localStorage.removeItem('catastral_licencia');
   }
