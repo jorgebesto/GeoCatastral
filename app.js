@@ -4,8 +4,62 @@
 const SUPA_URL = 'https://cknkscsglejyccwqkiys.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbmtzY3NnbGVqeWNjd3FraXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MTk3ODQsImV4cCI6MjA5MDM5NTc4NH0.V3eYDnFJHhT4ALNKo66yCr1gwUtzsZtQ_ftToQDx48Y';
 
-const SESION_MINUTOS = 10; // minutos de sesión activa
+const SESION_MINUTOS = 480; // 8 horas de sesión activa (trabajo de campo)
 let inactividadTimer = null;
+
+// ═══════════════════════════════════════════════════
+//  NOTIFICACIÓN WHATSAPP
+//  Se dispara en segundo plano cuando alguien ingresa
+//  con una licencia válida.
+// ═══════════════════════════════════════════════════
+const WA_ADMIN_NUMBER = '573132694579';
+
+async function notificarIngresoWhatsApp(codigo, nombre) {
+  const ahora = new Date().toLocaleString('es-CO', {
+    day: '2-digit', month: 'long', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+  // Intentar guardar en tabla de auditoría Supabase
+  try {
+    await fetch(SUPA_URL + '/rest/v1/ingresos_log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPA_KEY,
+        'Authorization': 'Bearer ' + SUPA_KEY,
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        codigo_licencia: codigo,
+        nombre_usuario: nombre || null,
+        ingresado_en: new Date().toISOString(),
+        user_agent: navigator.userAgent.substring(0, 200)
+      })
+    });
+  } catch(_) { /* Sin conexión - no bloquear */ }
+
+  // Abrir WhatsApp en segundo plano (ventana oculta / pestaña)
+  try {
+    const msg = encodeURIComponent(
+      "🔐 *Ingreso - Registro Catastral*
+
+" +
+      "👤 Usuario: " + (nombre || '(sin nombre)') + "
+" +
+      "🔑 Código: " + codigo + "
+" +
+      "📅 " + ahora
+    );
+    // Creamos un iframe invisible para no interrumpir al usuario
+    const notifFrame = document.createElement('iframe');
+    notifFrame.style.display = 'none';
+    notifFrame.src = 'https://wa.me/' + WA_ADMIN_NUMBER + '?text=' + msg;
+    document.body.appendChild(notifFrame);
+    setTimeout(() => {
+      if (notifFrame.parentNode) notifFrame.parentNode.removeChild(notifFrame);
+    }, 5000);
+  } catch(_) { /* Silencioso */ }
+}
 
 async function verificarLicencia() {
   const input = document.getElementById('lic-input');
@@ -64,6 +118,9 @@ async function verificarLicencia() {
 
     ok.textContent = '✓ Bienvenido' + (lic.nombre ? ', ' + lic.nombre : '') + ' — Licencia válida hasta ' + fechaStr + ' (' + diasRestantes + ' días)';
     ok.classList.add('show');
+
+    // Notificar ingreso al administrador (en segundo plano)
+    notificarIngresoWhatsApp(lic.codigo, lic.nombre || '');
 
     setTimeout(() => lanzarAppConLicencia(), 1200);
 
@@ -1021,15 +1078,13 @@ function updateProgress() {
 }
 
 function downloadPhotos() {
-  const p=photos[currentId]||{};
-  const f=features.find(x=>x.id===currentId);
-  Object.entries(p).forEach(([corner,arr])=>{
-    arr.forEach((ph,idx)=>{
-      const a=document.createElement('a');
-      a.href=ph.dataUrl;
-      a.download=`Manzana_${f.num}_${corner}_foto${idx+1}_${ph.name}`;
-      a.click();
-    });
+  const pList = photos[currentId] || [];
+  const f = features.find(x => x.id === currentId);
+  pList.forEach((ph, idx) => {
+    const a = document.createElement('a');
+    a.href = ph.dataUrl;
+    a.download = `Manzana_${f.num}_foto${idx + 1}_${ph.name}`;
+    a.click();
   });
 }
 
@@ -1081,7 +1136,7 @@ async function exportKMZ() {
       const coordStr = f.rings[0].map(([lat,lng]) => lng+','+lat+',0').join(' ');
       const color = isF ? 'cc6e5f9f' : hasPhotos(f.id) ? 'cc38b8e0' : 'cc3a5ce0';
       placemarks += '\n  <Placemark>'
-        + '\n    <n>Manzana ' + f.num + '</n>'
+        + '\n    <name>Manzana ' + f.num + '</name>'
         + '\n    <description>' + descHtml + '</description>'
         + '\n    <Style>'
         + '\n      <PolyStyle><color>' + color + '</color><fill>1</fill><outline>1</outline></PolyStyle>'
@@ -1096,7 +1151,7 @@ async function exportKMZ() {
     const kml = '<?xml version="1.0" encoding="UTF-8"?>'
       + '\n<kml xmlns="http://www.opengis.net/kml/2.2">'
       + '\n<Document>'
-      + '\n  <n>Registro Catastral</n>'
+      + '\n  <name>Registro Catastral</name>'
       + '\n  <description>Manzanas con registro fotografico georreferenciado</description>'
       + placemarks
       + '\n</Document>\n</kml>';
