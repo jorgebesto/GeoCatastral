@@ -4,61 +4,32 @@
 const SUPA_URL = 'https://cknkscsglejyccwqkiys.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbmtzY3NnbGVqeWNjd3FraXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MTk3ODQsImV4cCI6MjA5MDM5NTc4NH0.V3eYDnFJHhT4ALNKo66yCr1gwUtzsZtQ_ftToQDx48Y';
 
-const SESION_MINUTOS = 480; // 8 horas de sesión activa (trabajo de campo)
+const SESION_MINUTOS = 30; // minutos de sesión activa (aumentado de 10 a 30 para trabajo de campo)
 let inactividadTimer = null;
 
 // ═══════════════════════════════════════════════════
-//  NOTIFICACIÓN WHATSAPP
-//  Se dispara en segundo plano cuando alguien ingresa
-//  con una licencia válida.
+//  NOTIFICACIONES TELEGRAM — vía Supabase Edge Function
+//  La Edge Function llama a Telegram desde el servidor
+//  (el navegador no puede hacerlo directamente por CORS)
 // ═══════════════════════════════════════════════════
-const WA_ADMIN_NUMBER = '573132694579';
-
-async function notificarIngresoWhatsApp(codigo, nombre) {
-  const ahora = new Date().toLocaleString('es-CO', {
-    day: '2-digit', month: 'long', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: true
-  });
-  // Intentar guardar en tabla de auditoría Supabase
+async function notificarIngreso(codigoLic, nombreLic) {
   try {
-    await fetch(SUPA_URL + '/rest/v1/ingresos_log', {
+    await fetch(SUPA_URL + '/functions/v1/notify-telegram', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPA_KEY,
+        'Content-Type':  'application/json',
         'Authorization': 'Bearer ' + SUPA_KEY,
-        'Prefer': 'return=minimal'
+        'apikey':        SUPA_KEY,
       },
       body: JSON.stringify({
-        codigo_licencia: codigo,
-        nombre_usuario: nombre || null,
-        ingresado_en: new Date().toISOString(),
-        user_agent: navigator.userAgent.substring(0, 200)
-      })
+        codigo:     codigoLic,
+        nombre:     nombreLic || '',
+        user_agent: navigator.userAgent.slice(0, 300),
+      }),
     });
-  } catch(_) { /* Sin conexión - no bloquear */ }
-
-  // Abrir WhatsApp en segundo plano (ventana oculta / pestaña)
-  try {
-    const msg = encodeURIComponent(
-      "🔐 *Ingreso - Registro Catastral*
-
-" +
-      "👤 Usuario: " + (nombre || '(sin nombre)') + "
-" +
-      "🔑 Código: " + codigo + "
-" +
-      "📅 " + ahora
-    );
-    // Creamos un iframe invisible para no interrumpir al usuario
-    const notifFrame = document.createElement('iframe');
-    notifFrame.style.display = 'none';
-    notifFrame.src = 'https://wa.me/' + WA_ADMIN_NUMBER + '?text=' + msg;
-    document.body.appendChild(notifFrame);
-    setTimeout(() => {
-      if (notifFrame.parentNode) notifFrame.parentNode.removeChild(notifFrame);
-    }, 5000);
-  } catch(_) { /* Silencioso */ }
+  } catch(e) {
+    console.warn('Notificación Telegram falló:', e);
+  }
 }
 
 async function verificarLicencia() {
@@ -119,8 +90,23 @@ async function verificarLicencia() {
     ok.textContent = '✓ Bienvenido' + (lic.nombre ? ', ' + lic.nombre : '') + ' — Licencia válida hasta ' + fechaStr + ' (' + diasRestantes + ' días)';
     ok.classList.add('show');
 
-    // Notificar ingreso al administrador (en segundo plano)
-    notificarIngresoWhatsApp(lic.codigo, lic.nombre || '');
+    // Registrar ingreso en Supabase (tabla access_log) — silencioso
+    fetch(SUPA_URL + '/rest/v1/access_log', {
+      method: 'POST',
+      headers: {
+        'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY,
+        'Content-Type': 'application/json', 'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        codigo: lic.codigo,
+        nombre: lic.nombre || null,
+        ingreso_en: new Date().toISOString(),
+        user_agent: navigator.userAgent.slice(0, 200)
+      })
+    }).catch(() => {}); // silencioso si la tabla no existe aún
+
+    // Notificar por Telegram (via Edge Function)
+    notificarIngreso(lic.codigo, lic.nombre || '');
 
     setTimeout(() => lanzarAppConLicencia(), 1200);
 
@@ -167,9 +153,21 @@ function iniciarTimerInactividad() {
 
 function cerrarSesionPorInactividad() {
   localStorage.removeItem('catastral_licencia');
-  // Mostrar aviso y volver a pantalla de licencia
-  alert('⏱️ Sesión expirada por inactividad (' + SESION_MINUTOS + ' min).\n\nIngresa tu código nuevamente para continuar.');
-  location.reload();
+  // Mostrar aviso no intrusivo y volver a pantalla de licencia
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
+  overlay.innerHTML = `
+    <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:2rem;max-width:360px;width:100%;text-align:center;display:flex;flex-direction:column;gap:1rem">
+      <div style="font-size:2.5rem">⏱️</div>
+      <p style="font-weight:700;font-size:1rem">Sesión expirada</p>
+      <p style="font-family:'Courier New',monospace;font-size:0.62rem;color:#7a7f94;line-height:1.7">
+        ${SESION_MINUTOS} min de inactividad.<br>Ingresa tu código para continuar.
+      </p>
+      <button onclick="location.reload()" style="padding:0.8rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em">
+        Volver al inicio
+      </button>
+    </div>`;
+  document.body.appendChild(overlay);
 }
 
 // Verificar sesión guardada al cargar
@@ -387,16 +385,31 @@ function parseGpkgGeometry(bytes) {
 function parseWKB(view, offset) {
   const byteOrder = view.getUint8(offset); offset++;
   const le = byteOrder === 1;
-  const geomType = le ? view.getUint32(offset,true) : view.getUint32(offset,false); offset+=4;
+  const geomTypeFull = le ? view.getUint32(offset,true) : view.getUint32(offset,false); offset+=4;
+
+  // Extraer tipo base (ignorar flags ISO de Z/M: bits altos)
+  // WKB ISO: 1001=PointZ, 1003=PolygonZ, etc. WKB EWKB: flag 0x80000000
+  let geomType = geomTypeFull & 0xFFFF;
+  if (geomType > 1000 && geomType < 1008) geomType -= 1000; // ISO Z
+  if (geomType > 2000 && geomType < 2008) geomType -= 2000; // ISO M
+  if (geomType > 3000 && geomType < 3008) geomType -= 3000; // ISO ZM
+  const hasZ = !!(geomTypeFull & 0x80000000) || (geomTypeFull > 1000 && geomTypeFull < 4000);
+  const hasM = !!(geomTypeFull & 0x40000000);
+  const coordSize = 2 + (hasZ ? 1 : 0) + (hasM ? 1 : 0); // número de doubles por punto
 
   const readDouble = () => { const v = le ? view.getFloat64(offset,true) : view.getFloat64(offset,false); offset+=8; return v; };
   const readUint32 = () => { const v = le ? view.getUint32(offset,true) : view.getUint32(offset,false); offset+=4; return v; };
 
-  const readPoint   = () => [readDouble(), readDouble()];
-  const readRing    = () => { const n=readUint32(); const pts=[]; for(let i=0;i<n;i++) pts.push(readPoint()); return pts; };
+  // Lee un punto descartando Z y M si los hay
+  const readPoint = () => {
+    const x = readDouble(); const y = readDouble();
+    for (let k = 2; k < coordSize; k++) readDouble(); // skip Z/M
+    return [x, y];
+  };
+  const readRing = () => { const n=readUint32(); const pts=[]; for(let i=0;i<n;i++) pts.push(readPoint()); return pts; };
 
   let geom = null;
-  const t = geomType & 0xFFFF;
+  const t = geomType;
 
   if (t===1) { // Point
     const c=readPoint(); geom={type:'Point',coordinates:c};
@@ -411,6 +424,13 @@ function parseWKB(view, offset) {
     const n=readUint32(); const pts=[];
     for(let i=0;i<n;i++){ const r=parseWKB(view,offset); offset=r.offset; pts.push(r.geom.coordinates); }
     geom={type:'MultiPoint',coordinates:pts};
+  } else if (t===2) { // LineString — ignorar silenciosamente
+    const n=readUint32(); for(let i=0;i<n;i++) readPoint();
+    geom=null;
+  } else if (t===5) { // MultiLineString — ignorar silenciosamente
+    const n=readUint32();
+    for(let i=0;i<n;i++){ const r=parseWKB(view,offset); offset=r.offset; }
+    geom=null;
   }
   return {geom, offset};
 }
@@ -482,28 +502,45 @@ async function verificarSesionGuardada() {
   const nManz   = sesion.features.length;
   const nFin    = Object.values(sesion.finished || {}).filter(Boolean).length;
 
-  const recuperar = confirm(
-    '📂 Hay una sesión guardada\n\n' +
-    '📅 ' + fecha + ' a las ' + hora + '\n' +
-    '🗺️  ' + nManz + ' manzanas · ' + nFotos + ' fotos · ' + nFin + ' finalizadas\n\n' +
-    '¿Deseas continuar donde lo dejaste?'
-  );
+  // Modal personalizado en lugar de confirm() nativo
+  const recuperar = await new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end;justify-content:center;padding:1rem';
+    overlay.innerHTML = `
+      <div style="background:#181c27;border:1px solid #2a2f44;border-radius:18px 18px 0 0;padding:1.6rem 1.4rem 2rem;width:100%;max-width:440px;display:flex;flex-direction:column;gap:1rem">
+        <div style="width:36px;height:4px;background:#2a2f44;border-radius:2px;margin:0 auto"></div>
+        <div style="font-size:1.1rem;font-weight:800">📂 Sesión guardada</div>
+        <div style="background:#1e2333;border:1px solid #2a2f44;border-radius:10px;padding:0.9rem 1rem;font-family:'Courier New',monospace;font-size:0.62rem;color:#7a7f94;line-height:2">
+          📅 ${fecha} a las ${hora}<br>
+          🗺️ ${nManz} manzanas &nbsp;·&nbsp; ${nFotos} fotos &nbsp;·&nbsp; ${nFin} finalizadas
+        </div>
+        <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;text-align:center;text-transform:uppercase;letter-spacing:0.08em">¿Continuar donde lo dejaste?</p>
+        <div style="display:flex;gap:0.7rem">
+          <button id="_ses_no" style="flex:1;padding:0.8rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">
+            Nueva sesión
+          </button>
+          <button id="_ses_si" style="flex:2;padding:0.8rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">
+            ✓ Continuar
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('_ses_si').onclick = () => { document.body.removeChild(overlay); resolve(true); };
+    document.getElementById('_ses_no').onclick = () => { document.body.removeChild(overlay); resolve(false); };
+  });
 
   if (recuperar) {
     features  = sesion.features;
     photos    = sesion.photos   || {};
     finished  = sesion.finished || {};
-    // Inicializar arrays faltantes
     features.forEach(f => {
       if (!photos[f.id])   photos[f.id]   = [];
       if (finished[f.id] === undefined) finished[f.id] = false;
     });
     launchApp();
-    // Actualizar estilos de polígonos según estado guardado
     setTimeout(() => {
       features.forEach(f => updatePolygonStyle(f.id));
       updateProgress();
-      // Restaurar marcadores de fotos
       features.forEach(f => syncPhotoMarkers(f.id));
     }, 500);
   } else {
@@ -671,12 +708,14 @@ function launchApp() {
   // Draw polygons
   const bounds = [];
   features.forEach(f => {
+    // Para MultiPolígono: guardar todos los L.polygon en un array
+    leafletLayers[f.id] = [];
     f.rings.forEach(ring => {
       const poly = L.polygon(ring, { className:'lf-empty', weight:1.5 });
       poly.on('click', () => selectManzana(f.id));
       poly.bindTooltip(`Manzana ${f.num}`, { permanent:false, direction:'top', className:'lf-tt' });
       poly.addTo(map);
-      leafletLayers[f.id] = leafletLayers[f.id] || poly;
+      leafletLayers[f.id].push(poly);
       bounds.push(...ring);
     });
   });
@@ -794,15 +833,15 @@ function selectManzana(id) {
 
   // Reset all polygon styles
   features.forEach(f => {
-    const ly = leafletLayers[f.id];
-    if (!ly) return;
+    const layers = leafletLayers[f.id];
+    if (!layers) return;
     const cls = finished[f.id] ? 'lf-finished'
       : hasPhotos(f.id) ? 'lf-partial' : 'lf-empty';
-    ly.setStyle({ className: cls, weight: 1.5 });
+    layers.forEach(ly => ly.setStyle({ className: cls, weight: 1.5 }));
   });
   // Highlight selected
-  const selLy = leafletLayers[id];
-  if (selLy) selLy.setStyle({ className:'lf-selected', weight:2.5 });
+  const selLayers = leafletLayers[id];
+  if (selLayers) selLayers.forEach(ly => ly.setStyle({ className:'lf-selected', weight:2.5 }));
 
   const f = features.find(x => x.id === id);
   document.getElementById('panel-title').innerHTML =
@@ -1047,12 +1086,34 @@ function removePhoto(idx) {
 function clearManzana() {
   if (!currentId && currentId !== 0) return;
   const pList = photos[currentId] || [];
-  if (pList.length > 0 && !confirm('¿Eliminar todas las fotos de Manzana ' + (features.find(f=>f.id===currentId)?.num) + '?')) return;
-  photos[currentId] = [];
-  finished[currentId] = false;
-  removeAllMarkersForFeature(currentId);
-  renderPanelContent();
-  updateMemoryUI();
+  const f = features.find(f => f.id === currentId);
+  if (!pList.length) {
+    // Nada que limpiar
+    finished[currentId] = false;
+    removeAllMarkersForFeature(currentId);
+    renderPanelContent(); updateMemoryUI(); return;
+  }
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
+  overlay.innerHTML = `
+    <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:1.6rem 1.4rem;max-width:320px;width:100%;display:flex;flex-direction:column;gap:1rem;text-align:center">
+      <div style="font-size:2rem">🗑</div>
+      <p style="font-weight:700">¿Eliminar fotos?</p>
+      <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;line-height:1.7">Se eliminarán las ${pList.length} foto${pList.length>1?'s':''} de Manzana ${f?.num}.</p>
+      <div style="display:flex;gap:0.7rem;margin-top:0.3rem">
+        <button id="_cl_no" style="flex:1;padding:0.75rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">Cancelar</button>
+        <button id="_cl_si" style="flex:1;padding:0.75rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">Eliminar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('_cl_si').onclick = () => {
+    document.body.removeChild(overlay);
+    photos[currentId] = [];
+    finished[currentId] = false;
+    removeAllMarkersForFeature(currentId);
+    renderPanelContent(); updateMemoryUI();
+  };
+  document.getElementById('_cl_no').onclick = () => document.body.removeChild(overlay);
 }
 function finishManzana()   { finished[currentId]=true;  renderPanelContent(); }
 function unfinishManzana() { finished[currentId]=false; renderPanelContent(); }
@@ -1060,11 +1121,13 @@ function unfinishManzana() { finished[currentId]=false; renderPanelContent(); }
 function hasPhotos(id) { return (photos[id]||[]).length > 0; }
 
 function updatePolygonStyle(id) {
-  const ly=leafletLayers[id]; if(!ly) return;
-  const cls = id===currentId ? 'lf-selected'
+  const layers = leafletLayers[id];
+  if (!layers || !layers.length) return;
+  const cls = id === currentId ? 'lf-selected'
     : finished[id] ? 'lf-finished'
     : hasPhotos(id) ? 'lf-partial' : 'lf-empty';
-  ly.setStyle({ className:cls, weight: id===currentId?2.5:1.5 });
+  const w = id === currentId ? 2.5 : 1.5;
+  layers.forEach(ly => ly.setStyle({ className: cls, weight: w }));
 }
 
 function updateProgress() {
@@ -1083,7 +1146,7 @@ function downloadPhotos() {
   pList.forEach((ph, idx) => {
     const a = document.createElement('a');
     a.href = ph.dataUrl;
-    a.download = `Manzana_${f.num}_foto${idx + 1}_${ph.name}`;
+    a.download = `Manzana_${f.num}_foto${idx+1}_${ph.name}`;
     a.click();
   });
 }
@@ -1112,7 +1175,9 @@ function resizeImage(dataUrl, maxPx) {
 
 async function exportKMZ() {
   const btn = document.getElementById('btn-kmz');
-  btn.textContent='\u23f3 Generando...'; btn.disabled=true;
+  btn.textContent='⏳ Generando...'; btn.disabled=true;
+  // Permitir que el DOM se actualice antes del proceso pesado
+  await new Promise(r => setTimeout(r, 50));
   try {
     const zip = new JSZip();
     let placemarks = '';
@@ -1136,7 +1201,7 @@ async function exportKMZ() {
       const coordStr = f.rings[0].map(([lat,lng]) => lng+','+lat+',0').join(' ');
       const color = isF ? 'cc6e5f9f' : hasPhotos(f.id) ? 'cc38b8e0' : 'cc3a5ce0';
       placemarks += '\n  <Placemark>'
-        + '\n    <name>Manzana ' + f.num + '</name>'
+        + '\n    <n>Manzana ' + f.num + '</n>'
         + '\n    <description>' + descHtml + '</description>'
         + '\n    <Style>'
         + '\n      <PolyStyle><color>' + color + '</color><fill>1</fill><outline>1</outline></PolyStyle>'
@@ -1151,7 +1216,7 @@ async function exportKMZ() {
     const kml = '<?xml version="1.0" encoding="UTF-8"?>'
       + '\n<kml xmlns="http://www.opengis.net/kml/2.2">'
       + '\n<Document>'
-      + '\n  <name>Registro Catastral</name>'
+      + '\n  <n>Registro Catastral</n>'
       + '\n  <description>Manzanas con registro fotografico georreferenciado</description>'
       + placemarks
       + '\n</Document>\n</kml>';
@@ -1193,9 +1258,21 @@ function resetProc() {
   document.getElementById('proc-status').classList.remove('show');
 }
 function resetApp() {
-  if(!confirm('¿Volver al inicio? Se perderán los datos.')) return;
-  borrarSesionGuardada();
-  location.reload();
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
+  overlay.innerHTML = `
+    <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:1.6rem 1.4rem;max-width:340px;width:100%;display:flex;flex-direction:column;gap:1rem;text-align:center">
+      <div style="font-size:2rem">↩</div>
+      <p style="font-weight:700">¿Volver al inicio?</p>
+      <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;line-height:1.7">Se perderán todos los datos no exportados.</p>
+      <div style="display:flex;gap:0.7rem;margin-top:0.3rem">
+        <button id="_rst_no" style="flex:1;padding:0.75rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">Cancelar</button>
+        <button id="_rst_si" style="flex:1;padding:0.75rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">Confirmar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('_rst_si').onclick = () => { borrarSesionGuardada(); location.reload(); };
+  document.getElementById('_rst_no').onclick = () => document.body.removeChild(overlay);
 }
 
 function openLightboxByIndex(idx) {
@@ -1383,11 +1460,23 @@ async function exportHTML() {
     URL.revokeObjectURL(url);
     btn.textContent = '⬇ Reporte HTML'; btn.disabled = false;
 
-    // Ofrecer limpiar la sesión guardada
+    // Ofrecer limpiar la sesión guardada — modal personalizado
     setTimeout(() => {
-      if (confirm('✅ Reporte generado.\n\n¿Deseas limpiar el progreso guardado para empezar una nueva sesión?')) {
-        borrarSesionGuardada();
-      }
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
+      overlay.innerHTML = `
+        <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:1.6rem 1.4rem;max-width:360px;width:100%;display:flex;flex-direction:column;gap:1rem;text-align:center">
+          <div style="font-size:2rem">✅</div>
+          <p style="font-weight:700">Reporte generado</p>
+          <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;line-height:1.7">¿Deseas limpiar el progreso guardado para empezar una nueva sesión?</p>
+          <div style="display:flex;gap:0.7rem;margin-top:0.3rem">
+            <button id="_rp_no" style="flex:1;padding:0.75rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">Mantener</button>
+            <button id="_rp_si" style="flex:1;padding:0.75rem;border-radius:10px;border:none;cursor:pointer;background:#3ab87a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">Limpiar</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      document.getElementById('_rp_si').onclick = () => { document.body.removeChild(overlay); borrarSesionGuardada(); };
+      document.getElementById('_rp_no').onclick = () => document.body.removeChild(overlay);
     }, 500);
   } catch(e) {
     alert('Error generando reporte: ' + e.message);
