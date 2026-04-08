@@ -61,9 +61,6 @@ async function verificarLicencia() {
     }
 
     const lic = data[0];
-
-// 🔔 NOTIFICACIÓN A TELEGRAM
-  await notificarIngreso(codigo, lic?.usuario);
     
     if (!lic.activo) {
       mostrarErrorLic('Esta licencia ha sido desactivada. Contacta al administrador.');
@@ -1017,13 +1014,13 @@ function compressImage(dataUrl) {
   return new Promise(res => {
     const img = new Image();
     img.onload = () => {
-      const MAX = 1200;
+      const MAX = 1920;
       const scale = Math.min(1, MAX / Math.max(img.width, img.height));
       const c = document.createElement('canvas');
       c.width  = Math.round(img.width  * scale);
       c.height = Math.round(img.height * scale);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      res(c.toDataURL('image/jpeg', 0.72));
+      res(c.toDataURL('image/jpeg', 0.90));
     };
     img.onerror = () => res(dataUrl);
     img.src = dataUrl;
