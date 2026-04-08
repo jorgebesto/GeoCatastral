@@ -63,16 +63,7 @@ async function verificarLicencia() {
     const lic = data[0];
 
 // 🔔 NOTIFICACIÓN A TELEGRAM
-      fetch("https://cknkscsglejyccwqkiys.supabase.co/functions/v1/rapid-endpoint", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          codigo: codigo,
-          usuario: lic?.usuario || "Usuario Web"
-        })
-      });
+  await notificarIngreso(codigo, lic?.usuario);
     
     if (!lic.activo) {
       mostrarErrorLic('Esta licencia ha sido desactivada. Contacta al administrador.');
