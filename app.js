@@ -4,39 +4,45 @@
 const SUPA_URL = 'https://cknkscsglejyccwqkiys.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbmtzY3NnbGVqeWNjd3FraXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MTk3ODQsImV4cCI6MjA5MDM5NTc4NH0.V3eYDnFJHhT4ALNKo66yCr1gwUtzsZtQ_ftToQDx48Y';
 
-const SESION_MINUTOS = 30; // minutos de sesión activa (aumentado de 10 a 30 para trabajo de campo)
+const SESION_MINUTOS = 30;
 let inactividadTimer = null;
+let currentMode = null;
+let usuarioActual = '';
 
 // ═══════════════════════════════════════════════════
-//  NOTIFICACIONES TELEGRAM — vía Supabase Edge Function
-//  La Edge Function llama a Telegram desde el servidor
-//  (el navegador no puede hacerlo directamente por CORS)
+//  STATE GLOBAL
 // ═══════════════════════════════════════════════════
-async function notificarIngreso(codigoLic, nombreLic) {
-  try {
-    await fetch(SUPA_URL + '/functions/v1/notify-telegram', {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': 'Bearer ' + SUPA_KEY,
-        'apikey':        SUPA_KEY,
-      },
-      body: JSON.stringify({
-        codigo:     codigoLic,
-        nombre:     nombreLic || '',
-        user_agent: navigator.userAgent.slice(0, 300),
-      }),
-    });
-  } catch(e) {
-    console.warn('Notificación Telegram falló:', e);
-  }
-}
+let features = [];
+let photos = {};
+let finished = {};
+let currentId = null;
+let pendingLatLng = null;
+let leafletLayers = {};
+let map = null;
+let panelOpen = false;
+let pinModeActive = false;
+let pinMapClickHandler = null;
+let offerModeActive = false;
+let lastPhotoId = null;
+let isMercadoMode = true;
+let locationMarker = null;
+let locationCircle = null;
+let locationWatchId = null;
+let locationActive = false;
+let offerMarkers = []; // Array para guardar marcadores y poder refrescarlos
 
+const MEM_LIMIT_MB = 400;
+const MEM_WARN_PCT = 0.70;
+const MEM_BLOCK_PCT = 0.90;
+
+// ═══════════════════════════════════════════════════
+//  FUNCIONES DE LICENCIA
+// ═══════════════════════════════════════════════════
 async function verificarLicencia() {
   const input = document.getElementById('lic-input');
-  const btn   = document.getElementById('lic-btn');
-  const err   = document.getElementById('lic-error');
-  const ok    = document.getElementById('lic-ok');
+  const btn = document.getElementById('lic-btn');
+  const err = document.getElementById('lic-error');
+  const ok = document.getElementById('lic-ok');
   const codigo = input.value.trim().toUpperCase();
 
   if (!codigo) { mostrarErrorLic('Ingresa tu código de licencia.'); return; }
@@ -52,66 +58,49 @@ async function verificarLicencia() {
       { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
     );
 
-    if (!res.ok) throw new Error('Error de conexión (' + res.status + ')');
+    if (!res.ok) throw new Error('Error de conexión');
     const data = await res.json();
 
     if (!data.length) {
-      mostrarErrorLic('Código no encontrado. Verifica e intenta de nuevo.');
-      btn.disabled = false; btn.textContent = 'Verificar licencia'; return;
+      mostrarErrorLic('Código no encontrado.');
+      btn.disabled = false; btn.textContent = 'Verificar licencia';
+      return;
     }
 
     const lic = data[0];
-    
     if (!lic.activo) {
-      mostrarErrorLic('Esta licencia ha sido desactivada. Contacta al administrador.');
-      btn.disabled = false; btn.textContent = 'Verificar licencia'; return;
+      mostrarErrorLic('Licencia desactivada.');
+      btn.disabled = false; btn.textContent = 'Verificar licencia';
+      return;
     }
 
-    const hoy   = new Date(); hoy.setHours(0,0,0,0);
+    const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
     const vence = new Date(lic.fecha_vencimiento + 'T00:00:00');
     if (hoy > vence) {
-      const fechaStr = vence.toLocaleDateString('es-CO', {day:'2-digit', month:'long', year:'numeric'});
-      mostrarErrorLic('Licencia vencida el ' + fechaStr + '. Contacta al administrador.');
-      btn.disabled = false; btn.textContent = 'Verificar licencia'; return;
+      mostrarErrorLic('Licencia vencida.');
+      btn.disabled = false; btn.textContent = 'Verificar licencia';
+      return;
     }
 
-    const diasRestantes = Math.ceil((vence - hoy) / 86400000);
-    const fechaStr = vence.toLocaleDateString('es-CO', {day:'2-digit', month:'long', year:'numeric'});
+    usuarioActual = lic.nombre || lic.codigo;
 
-    // Guardar sesión con timestamp actual
     localStorage.setItem('catastral_licencia', JSON.stringify({
       codigo: lic.codigo,
-      nombre: lic.nombre || '',
-      vence:  lic.fecha_vencimiento,
+      nombre: usuarioActual,
+      vence: lic.fecha_vencimiento,
       validadoEn: new Date().toISOString(),
       ultimaActividad: new Date().toISOString()
     }));
 
-    ok.textContent = '✓ Bienvenido' + (lic.nombre ? ', ' + lic.nombre : '') + ' — Licencia válida hasta ' + fechaStr + ' (' + diasRestantes + ' días)';
+    const fechaStr = vence.toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' });
+    ok.textContent = '✓ Bienvenido ' + usuarioActual + ' — Válida hasta ' + fechaStr;
     ok.classList.add('show');
 
-    // Registrar ingreso en Supabase (tabla access_log) — silencioso
-    fetch(SUPA_URL + '/rest/v1/access_log', {
-      method: 'POST',
-      headers: {
-        'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY,
-        'Content-Type': 'application/json', 'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify({
-        codigo: lic.codigo,
-        nombre: lic.nombre || null,
-        ingreso_en: new Date().toISOString(),
-        user_agent: navigator.userAgent.slice(0, 200)
-      })
-    }).catch(() => {}); // silencioso si la tabla no existe aún
+    document.getElementById('user-name-display').textContent = usuarioActual;
+    setTimeout(() => mostrarSeleccionModo(), 1200);
 
-    // Notificar por Telegram (via Edge Function)
-    notificarIngreso(lic.codigo, lic.nombre || '');
-
-    setTimeout(() => lanzarAppConLicencia(), 1200);
-
-  } catch(e) {
-    mostrarErrorLic('Error de conexión. Verifica tu internet e intenta de nuevo.');
+  } catch (e) {
+    mostrarErrorLic('Error de conexión. Verifica tu internet.');
     btn.disabled = false; btn.textContent = 'Verificar licencia';
   }
 }
@@ -121,682 +110,419 @@ function mostrarErrorLic(msg) {
   err.textContent = msg; err.classList.add('show');
 }
 
-function lanzarAppConLicencia() {
+function mostrarSeleccionModo() {
   document.getElementById('license-screen').classList.add('hide');
-  document.getElementById('upload-screen').style.display = 'flex';
+  document.getElementById('selection-screen').style.display = 'flex';
   iniciarTimerInactividad();
-  verificarSesionGuardada();
 }
 
-// ── Timer de inactividad ──
+function initCatastralMode() {
+  currentMode = 'catastral';
+  isMercadoMode = false;
+  document.getElementById('selection-screen').style.display = 'none';
+  document.getElementById('upload-screen').style.display = 'flex';
+  document.getElementById('main-app-title').innerHTML = 'Registro <span>Catastral</span>';
+}
+
+function initMercadoMode() {
+  currentMode = 'mercado';
+  isMercadoMode = true;
+  features = [];
+  photos = { 'standalone': [] };
+  finished = {};
+  document.getElementById('selection-screen').style.display = 'none';
+  launchApp();
+  setTimeout(() => startLocation(), 1000);
+}
+
+function backToSelection() {
+  document.getElementById('upload-screen').style.display = 'none';
+  document.getElementById('selection-screen').style.display = 'flex';
+  resetProc();
+}
+
+// ═══════════════════════════════════════════════════
+//  TIMER INACTIVIDAD
+// ═══════════════════════════════════════════════════
 function iniciarTimerInactividad() {
   const LIMITE_MS = SESION_MINUTOS * 60 * 1000;
-
   function resetTimer() {
     clearTimeout(inactividadTimer);
-    // Actualizar última actividad en localStorage
     const ses = JSON.parse(localStorage.getItem('catastral_licencia') || 'null');
-    if (ses) {
-      ses.ultimaActividad = new Date().toISOString();
-      localStorage.setItem('catastral_licencia', JSON.stringify(ses));
-    }
+    if (ses) { ses.ultimaActividad = new Date().toISOString(); localStorage.setItem('catastral_licencia', JSON.stringify(ses)); }
     inactividadTimer = setTimeout(() => cerrarSesionPorInactividad(), LIMITE_MS);
   }
-
-  // Escuchar cualquier interacción del usuario
-  ['mousemove','mousedown','keydown','touchstart','touchmove','click','scroll'].forEach(ev => {
-    document.addEventListener(ev, resetTimer, { passive: true });
-  });
-
-  resetTimer(); // Iniciar el timer
+  ['mousemove', 'mousedown', 'keydown', 'touchstart', 'click'].forEach(ev => document.addEventListener(ev, resetTimer, { passive: true }));
+  resetTimer();
 }
 
 function cerrarSesionPorInactividad() {
   localStorage.removeItem('catastral_licencia');
-  // Mostrar aviso no intrusivo y volver a pantalla de licencia
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
-  overlay.innerHTML = `
-    <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:2rem;max-width:360px;width:100%;text-align:center;display:flex;flex-direction:column;gap:1rem">
-      <div style="font-size:2.5rem">⏱️</div>
-      <p style="font-weight:700;font-size:1rem">Sesión expirada</p>
-      <p style="font-family:'Courier New',monospace;font-size:0.62rem;color:#7a7f94;line-height:1.7">
-        ${SESION_MINUTOS} min de inactividad.<br>Ingresa tu código para continuar.
-      </p>
-      <button onclick="location.reload()" style="padding:0.8rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em">
-        Volver al inicio
-      </button>
-    </div>`;
+  overlay.innerHTML = `<div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:2rem;text-align:center"><p style="font-weight:700;margin-bottom:1rem">Sesión expirada por inactividad</p><button onclick="location.reload()" style="padding:0.8rem 1.5rem;background:#e05c3a;border:none;border-radius:10px;color:white;cursor:pointer">Volver al inicio</button></div>`;
   document.body.appendChild(overlay);
 }
 
-// Verificar sesión guardada al cargar
-window.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('lic-btn').addEventListener('click', verificarLicencia);
-  document.getElementById('lic-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') verificarLicencia();
+// ═══════════════════════════════════════════════════
+//  INDEXEDDB AUTOSAVE
+// ═══════════════════════════════════════════════════
+const DB_NAME = 'catastral_autosave';
+let db = null;
+
+function abrirDB() {
+  return new Promise((res, rej) => {
+    if (db) return res(db);
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('sesion', { keyPath: 'id' });
+    req.onsuccess = e => { db = e.target.result; res(db); };
+    req.onerror = () => rej(req.error);
   });
+}
 
-  const sesionGuardada = localStorage.getItem('catastral_licencia');
-  if (!sesionGuardada) return;
-
+async function guardarSesion() {
+  if (!features.length && isMercadoMode && (!photos['standalone'] || !photos['standalone'].length)) return;
   try {
-    const ses = JSON.parse(sesionGuardada);
+    const d = await abrirDB();
+    const sesion = { id: 'sesion_actual', ts: new Date().toISOString(), features, photos, finished, mode: currentMode };
+    const tx = d.transaction('sesion', 'readwrite');
+    tx.objectStore('sesion').put(sesion);
+  } catch (e) { console.warn('Autoguardado falló:', e); }
+}
 
-    // Verificar vencimiento de licencia
-    const hoy   = new Date(); hoy.setHours(0,0,0,0);
-    const vence = new Date(ses.vence + 'T00:00:00');
-    if (hoy > vence) { localStorage.removeItem('catastral_licencia'); return; }
-
-    // Verificar inactividad — si pasaron más de 10 min desde última actividad
-    const ultimaActividad = new Date(ses.ultimaActividad || ses.validadoEn);
-    const minDesde = (new Date() - ultimaActividad) / 60000;
-    if (minDesde >= SESION_MINUTOS) {
-      localStorage.removeItem('catastral_licencia');
-      mostrarErrorLic('Sesión expirada por inactividad. Ingresa tu código nuevamente.');
-      return;
-    }
-
-    // Sesión válida — re-verificar contra Supabase
-    reVerificarLicencia(ses.codigo);
-
-  } catch(e) {
-    localStorage.removeItem('catastral_licencia');
-  }
-});
-
-async function reVerificarLicencia(codigo) {
-  try {
-    const res = await fetch(
-      SUPA_URL + '/rest/v1/licencias?codigo=eq.' + encodeURIComponent(codigo) + '&select=activo,fecha_vencimiento,nombre',
-      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
-    );
-    const data = await res.json();
-
-    // Licencia desactivada o no existe
-    if (!data.length || !data[0].activo) {
-      localStorage.removeItem('catastral_licencia');
-      mostrarErrorLic('Tu licencia ha sido desactivada. Contacta al administrador.');
-      return;
-    }
-
-    // Licencia vencida
-    const hoy   = new Date(); hoy.setHours(0,0,0,0);
-    const vence = new Date(data[0].fecha_vencimiento + 'T00:00:00');
-    if (hoy > vence) {
-      localStorage.removeItem('catastral_licencia');
-      const fechaStr = vence.toLocaleDateString('es-CO', {day:'2-digit', month:'long', year:'numeric'});
-      mostrarErrorLic('Tu licencia venció el ' + fechaStr + '. Contacta al administrador.');
-      return;
-    }
-
-    // Todo OK — actualizar timestamp y entrar
-    const ses = JSON.parse(localStorage.getItem('catastral_licencia'));
-    ses.validadoEn = new Date().toISOString();
-    localStorage.setItem('catastral_licencia', JSON.stringify(ses));
-    lanzarAppConLicencia();
-
-  } catch(e) {
-    // Sin conexión — dejar pasar con sesión guardada
-    lanzarAppConLicencia();
-  }
+async function borrarSesionGuardada() {
+  try { const d = await abrirDB(); const tx = d.transaction('sesion', 'readwrite'); tx.objectStore('sesion').delete('sesion_actual'); } catch (e) { }
 }
 
 // ═══════════════════════════════════════════════════
-//  STATE
-// ═══════════════════════════════════════════════════
-let features    = [];   // [{id, name, coords[[lat,lng]], centroid, props}]
-let photos      = {};   // photos[id][corner] = [{name,dataUrl}, ...]
-let finished    = {};   // finished[id] = bool
-let currentId   = null;
-let pendingCorner = null;
-let pendingLatLng  = null;  // coordenadas elegidas en el mapa
-let leafletLayers = {}; // id → L.polygon
-let map         = null;
-let panelOpen   = false;
-
-const CORNERS = ['top-left','top-right','bottom-left','bottom-right'];
-const CLABELS = {'top-left':'↖ Sup Izq','top-right':'↗ Sup Der','bottom-left':'↙ Inf Izq','bottom-right':'↘ Inf Der'};
-
-// ═══════════════════════════════════════════════════
-//  SHAPEFILE READER
+//  SHAPEFILE Y GEOPACKAGE (MODO CATASTRAL)
 // ═══════════════════════════════════════════════════
 async function handleShapefile(event) {
   const files = Array.from(event.target.files);
-  const shpFile  = files.find(f => f.name.toLowerCase().endsWith('.shp'));
-  const dbfFile  = files.find(f => f.name.toLowerCase().endsWith('.dbf'));
-  const prjFile  = files.find(f => f.name.toLowerCase().endsWith('.prj'));
+  const shpFile = files.find(f => f.name.toLowerCase().endsWith('.shp'));
+  const dbfFile = files.find(f => f.name.toLowerCase().endsWith('.dbf'));
+  const prjFile = files.find(f => f.name.toLowerCase().endsWith('.prj'));
   if (!shpFile) { alert('No se encontró el archivo .shp'); return; }
 
   showProc('Leyendo Shapefile...');
-
   try {
     const shpBuf = await readFileBuffer(shpFile);
     const dbfBuf = dbfFile ? await readFileBuffer(dbfFile) : null;
-    let prjText  = null;
-    if (prjFile) prjText = await prjFile.text();
-
-    // Detect projection
-    let fromProj = null;
-    if (prjText) {
-      fromProj = detectProjection(prjText);
-    }
-
+    let prjText = prjFile ? await prjFile.text() : null;
+    let fromProj = prjText ? detectProjection(prjText) : null;
     const geojson = await shapefileToGeoJSON(shpBuf, dbfBuf);
     processGeoJSON(geojson, fromProj);
-  } catch(e) {
-    alert('Error leyendo shapefile: ' + e.message);
-    resetProc();
-  }
+  } catch (e) { alert('Error: ' + e.message); resetProc(); }
 }
 
-async function shapefileToGeoJSON(shpBuf, dbfBuf) {
+function shapefileToGeoJSON(shpBuf, dbfBuf) {
   return new Promise((resolve, reject) => {
-    if (typeof shapefile === 'undefined') { reject(new Error('shapefile.js no cargó')); return; }
-    const geojson = { type:'FeatureCollection', features:[] };
-    shapefile.open(shpBuf, dbfBuf)
-      .then(source => source.read().then(function collect(result) {
-        if (result.done) { resolve(geojson); return; }
-        geojson.features.push(result.value);
-        return source.read().then(collect);
-      }))
-      .catch(reject);
+    const geojson = { type: 'FeatureCollection', features: [] };
+    shapefile.open(shpBuf, dbfBuf).then(source => {
+      source.read().then(function collect(result) {
+        if (result.done) resolve(geojson);
+        else { geojson.features.push(result.value); return source.read().then(collect); }
+      });
+    }).catch(reject);
   });
 }
 
-// ═══════════════════════════════════════════════════
-//  GEOPACKAGE READER (SQLite via sql.js)
-// ═══════════════════════════════════════════════════
 async function handleGeopackage(event) {
   const file = event.target.files[0];
   if (!file) return;
   showProc('Leyendo GeoPackage...');
-
   try {
     const buf = await readFileBuffer(file);
-    const SQL = await initSqlJs({
-      locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}`
-    });
+    const SQL = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}` });
     const db = new SQL.Database(new Uint8Array(buf));
-
-    // Find geometry tables
     const tables = db.exec("SELECT table_name FROM gpkg_contents WHERE data_type='features'");
-    if (!tables.length || !tables[0].values.length) throw new Error('No se encontraron capas de geometría');
-
+    if (!tables.length) throw new Error('No se encontraron capas');
     const tableName = tables[0].values[0][0];
-    showProc(`Procesando capa: ${tableName}...`);
-
-    // Get geometry column
     const geomCols = db.exec(`SELECT column_name FROM gpkg_geometry_columns WHERE table_name='${tableName}'`);
-    const geomCol  = geomCols[0].values[0][0];
-
-    // Get all rows
+    const geomCol = geomCols[0].values[0][0];
     const rows = db.exec(`SELECT * FROM "${tableName}"`);
-    if (!rows.length) throw new Error('La tabla está vacía');
-
-    const cols  = rows[0].columns;
-    const vals  = rows[0].values;
+    if (!rows.length) throw new Error('Tabla vacía');
+    const cols = rows[0].columns;
+    const vals = rows[0].values;
     const geomIdx = cols.indexOf(geomCol);
-
-    // Get projection
-    const srsRows = db.exec(`SELECT s.definition FROM gpkg_spatial_ref_sys s
-      JOIN gpkg_geometry_columns g ON s.srs_id = g.srs_id
-      WHERE g.table_name='${tableName}'`);
-    let fromProj = null;
-    if (srsRows.length && srsRows[0].values.length) {
-      fromProj = detectProjection(srsRows[0].values[0][0]);
-    }
-
-    const geojson = { type:'FeatureCollection', features:[] };
+    const geojson = { type: 'FeatureCollection', features: [] };
     for (const row of vals) {
       const geomBytes = row[geomIdx];
       if (!geomBytes) continue;
       const geom = parseGpkgGeometry(geomBytes);
       if (!geom) continue;
       const props = {};
-      cols.forEach((c,i) => { if (i !== geomIdx) props[c] = row[i]; });
-      geojson.features.push({ type:'Feature', geometry:geom, properties:props });
+      cols.forEach((c, i) => { if (i !== geomIdx) props[c] = row[i]; });
+      geojson.features.push({ type: 'Feature', geometry: geom, properties: props });
     }
-
     db.close();
-    processGeoJSON(geojson, fromProj);
-  } catch(e) {
-    alert('Error leyendo GeoPackage: ' + e.message);
-    resetProc();
-  }
+    processGeoJSON(geojson, null);
+  } catch (e) { alert('Error: ' + e.message); resetProc(); }
 }
 
-// Parse GeoPackage binary geometry (WKB with 8-byte header)
 function parseGpkgGeometry(bytes) {
   try {
     const view = new DataView(bytes.buffer || bytes);
-    // Skip GeoPackage header (at least 8 bytes)
-    let offset = 0;
-    const magic = view.getUint8(0); // 'G'
-    if (magic !== 0x47) return null;
-    const flags = view.getUint8(3);
-    const envelopeType = (flags >> 1) & 0x07;
-    const envBytes = [0,32,48,48,64][envelopeType] || 0;
-    offset = 8 + envBytes;
+    let offset = 8;
     return parseWKB(view, offset).geom;
   } catch { return null; }
 }
 
 function parseWKB(view, offset) {
-  const byteOrder = view.getUint8(offset); offset++;
-  const le = byteOrder === 1;
-  const geomTypeFull = le ? view.getUint32(offset,true) : view.getUint32(offset,false); offset+=4;
-
-  // Extraer tipo base (ignorar flags ISO de Z/M: bits altos)
-  // WKB ISO: 1001=PointZ, 1003=PolygonZ, etc. WKB EWKB: flag 0x80000000
-  let geomType = geomTypeFull & 0xFFFF;
-  if (geomType > 1000 && geomType < 1008) geomType -= 1000; // ISO Z
-  if (geomType > 2000 && geomType < 2008) geomType -= 2000; // ISO M
-  if (geomType > 3000 && geomType < 3008) geomType -= 3000; // ISO ZM
-  const hasZ = !!(geomTypeFull & 0x80000000) || (geomTypeFull > 1000 && geomTypeFull < 4000);
-  const hasM = !!(geomTypeFull & 0x40000000);
-  const coordSize = 2 + (hasZ ? 1 : 0) + (hasM ? 1 : 0); // número de doubles por punto
-
-  const readDouble = () => { const v = le ? view.getFloat64(offset,true) : view.getFloat64(offset,false); offset+=8; return v; };
-  const readUint32 = () => { const v = le ? view.getUint32(offset,true) : view.getUint32(offset,false); offset+=4; return v; };
-
-  // Lee un punto descartando Z y M si los hay
-  const readPoint = () => {
-    const x = readDouble(); const y = readDouble();
-    for (let k = 2; k < coordSize; k++) readDouble(); // skip Z/M
-    return [x, y];
-  };
-  const readRing = () => { const n=readUint32(); const pts=[]; for(let i=0;i<n;i++) pts.push(readPoint()); return pts; };
-
+  const le = view.getUint8(offset) === 1; offset++;
+  let geomType = le ? view.getUint32(offset, true) : view.getUint32(offset, false); offset += 4;
+  geomType = geomType & 0xFFFF;
+  if (geomType > 1000 && geomType < 1008) geomType -= 1000;
+  const readDouble = () => { const v = le ? view.getFloat64(offset, true) : view.getFloat64(offset, false); offset += 8; return v; };
+  const readUint32 = () => { const v = le ? view.getUint32(offset, true) : view.getUint32(offset, false); offset += 4; return v; };
+  const readPoint = () => [readDouble(), readDouble()];
+  const readRing = () => { const n = readUint32(); const pts = []; for (let i = 0; i < n; i++) pts.push(readPoint()); return pts; };
   let geom = null;
-  const t = geomType;
-
-  if (t===1) { // Point
-    const c=readPoint(); geom={type:'Point',coordinates:c};
-  } else if (t===3) { // Polygon
-    const n=readUint32(); const rings=[]; for(let i=0;i<n;i++) rings.push(readRing());
-    geom={type:'Polygon',coordinates:rings};
-  } else if (t===6) { // MultiPolygon
-    const n=readUint32(); const polys=[];
-    for(let i=0;i<n;i++){ const r=parseWKB(view,offset); offset=r.offset; polys.push(r.geom.coordinates); }
-    geom={type:'MultiPolygon',coordinates:polys};
-  } else if (t===4) { // MultiPoint
-    const n=readUint32(); const pts=[];
-    for(let i=0;i<n;i++){ const r=parseWKB(view,offset); offset=r.offset; pts.push(r.geom.coordinates); }
-    geom={type:'MultiPoint',coordinates:pts};
-  } else if (t===2) { // LineString — ignorar silenciosamente
-    const n=readUint32(); for(let i=0;i<n;i++) readPoint();
-    geom=null;
-  } else if (t===5) { // MultiLineString — ignorar silenciosamente
-    const n=readUint32();
-    for(let i=0;i<n;i++){ const r=parseWKB(view,offset); offset=r.offset; }
-    geom=null;
-  }
-  return {geom, offset};
+  if (geomType === 3) { const n = readUint32(); const rings = []; for (let i = 0; i < n; i++) rings.push(readRing()); geom = { type: 'Polygon', coordinates: rings }; }
+  else if (geomType === 6) { const n = readUint32(); const polys = []; for (let i = 0; i < n; i++) { const r = parseWKB(view, offset); offset = r.offset; polys.push(r.geom.coordinates); } geom = { type: 'MultiPolygon', coordinates: polys }; }
+  return { geom, offset };
 }
 
-// ═══════════════════════════════════════════════════
-//  AUTOSAVE — IndexedDB (sin límite de tamaño)
-// ═══════════════════════════════════════════════════
-const DB_NAME    = 'catastral_autosave';
-const DB_VERSION = 1;
-const STORE_NAME = 'sesion';
-let   db         = null;
-
-function abrirDB() {
-  return new Promise((res, rej) => {
-    if (db) return res(db);
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = e => {
-      e.target.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
-    };
-    req.onsuccess = e => { db = e.target.result; res(db); };
-    req.onerror   = () => rej(req.error);
-  });
-}
-
-async function guardarSesion() {
-  if (!features.length) return;
-  try {
-    const d = await abrirDB();
-    const sesion = {
-      id:        'sesion_actual',
-      ts:        new Date().toISOString(),
-      features:  features,
-      photos:    photos,
-      finished:  finished
-    };
-    const tx = d.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(sesion);
-  } catch(e) { console.warn('Autoguardado falló:', e); }
-}
-
-async function cargarSesionGuardada() {
-  try {
-    const d = await abrirDB();
-    return new Promise((res) => {
-      const tx  = d.transaction(STORE_NAME, 'readonly');
-      const req = tx.objectStore(STORE_NAME).get('sesion_actual');
-      req.onsuccess = () => res(req.result || null);
-      req.onerror   = () => res(null);
-    });
-  } catch(e) { return null; }
-}
-
-async function borrarSesionGuardada() {
-  try {
-    const d = await abrirDB();
-    const tx = d.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).delete('sesion_actual');
-  } catch(e) {}
-}
-
-async function verificarSesionGuardada() {
-  const sesion = await cargarSesionGuardada();
-  if (!sesion || !sesion.features || !sesion.features.length) return;
-
-  const ts      = new Date(sesion.ts);
-  const fecha   = ts.toLocaleDateString('es-CO', { day:'2-digit', month:'long', year:'numeric' });
-  const hora    = ts.toLocaleTimeString('es-CO', { hour:'2-digit', minute:'2-digit' });
-  const nFotos  = Object.values(sesion.photos || {}).reduce((s,a) => s + (a||[]).length, 0);
-  const nManz   = sesion.features.length;
-  const nFin    = Object.values(sesion.finished || {}).filter(Boolean).length;
-
-  // Modal personalizado en lugar de confirm() nativo
-  const recuperar = await new Promise(resolve => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end;justify-content:center;padding:1rem';
-    overlay.innerHTML = `
-      <div style="background:#181c27;border:1px solid #2a2f44;border-radius:18px 18px 0 0;padding:1.6rem 1.4rem 2rem;width:100%;max-width:440px;display:flex;flex-direction:column;gap:1rem">
-        <div style="width:36px;height:4px;background:#2a2f44;border-radius:2px;margin:0 auto"></div>
-        <div style="font-size:1.1rem;font-weight:800">📂 Sesión guardada</div>
-        <div style="background:#1e2333;border:1px solid #2a2f44;border-radius:10px;padding:0.9rem 1rem;font-family:'Courier New',monospace;font-size:0.62rem;color:#7a7f94;line-height:2">
-          📅 ${fecha} a las ${hora}<br>
-          🗺️ ${nManz} manzanas &nbsp;·&nbsp; ${nFotos} fotos &nbsp;·&nbsp; ${nFin} finalizadas
-        </div>
-        <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;text-align:center;text-transform:uppercase;letter-spacing:0.08em">¿Continuar donde lo dejaste?</p>
-        <div style="display:flex;gap:0.7rem">
-          <button id="_ses_no" style="flex:1;padding:0.8rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">
-            Nueva sesión
-          </button>
-          <button id="_ses_si" style="flex:2;padding:0.8rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">
-            ✓ Continuar
-          </button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    document.getElementById('_ses_si').onclick = () => { document.body.removeChild(overlay); resolve(true); };
-    document.getElementById('_ses_no').onclick = () => { document.body.removeChild(overlay); resolve(false); };
-  });
-
-  if (recuperar) {
-    features  = sesion.features;
-    photos    = sesion.photos   || {};
-    finished  = sesion.finished || {};
-    features.forEach(f => {
-      if (!photos[f.id])   photos[f.id]   = [];
-      if (finished[f.id] === undefined) finished[f.id] = false;
-    });
-    launchApp();
-    setTimeout(() => {
-      features.forEach(f => updatePolygonStyle(f.id));
-      updateProgress();
-      features.forEach(f => syncPhotoMarkers(f.id));
-    }, 500);
-  } else {
-    borrarSesionGuardada();
-  }
-}
-
-// ═══════════════════════════════════════════════════
-//  PROJECTION DETECTION & REPROJECTION
-// ═══════════════════════════════════════════════════
 function detectProjection(prjText) {
   if (!prjText) return null;
   const t = prjText.toUpperCase();
-  // Already WGS84
-  if (t.includes('GEOGCS') && t.includes('WGS_1984') && !t.includes('PROJCS')) return null;
-  if (t.includes('EPSG:4326') || t.includes('"4326"')) return null;
-
-  // Try to find EPSG code
+  if (t.includes('GEOGCS') && t.includes('WGS_1984')) return null;
   const epsgMatch = prjText.match(/AUTHORITY\["EPSG","(\d+)"\]/i);
-  if (epsgMatch) {
-    const code = epsgMatch[1];
-    if (code === '4326') return null;
-    return `EPSG:${code}`;
-  }
-  // UTM zones
-  const utmMatch = t.match(/UTM_ZONE_(\d+)([NS])/);
-  if (utmMatch) {
-    const zone = utmMatch[1], hemi = utmMatch[2];
-    const epsg = hemi === 'N' ? 32600 + parseInt(zone) : 32700 + parseInt(zone);
-    return `EPSG:${epsg}`;
-  }
+  if (epsgMatch) return `EPSG:${epsgMatch[1]}`;
   return null;
 }
 
 function reprojectCoords(coords, fromProj) {
   if (!fromProj || !proj4) return coords;
-  try {
-    return proj4(fromProj, 'EPSG:4326', coords);
-  } catch { return coords; }
+  try { return proj4(fromProj, 'EPSG:4326', coords); } catch { return coords; }
 }
 
-function reprojectGeom(geom, fromProj) {
-  if (!fromProj) return geom;
-  const reproj = (c) => reprojectCoords(c, fromProj);
-  const reprojRing = ring => ring.map(reproj);
-
-  if (geom.type === 'Polygon') {
-    return { ...geom, coordinates: geom.coordinates.map(reprojRing) };
-  } else if (geom.type === 'MultiPolygon') {
-    return { ...geom, coordinates: geom.coordinates.map(poly => poly.map(reprojRing)) };
-  }
-  return geom;
-}
-
-// ═══════════════════════════════════════════════════
-//  PROCESS GEOJSON → features array
-// ═══════════════════════════════════════════════════
 function processGeoJSON(geojson, fromProj) {
   showProc('Procesando geometrías...');
   features = [];
+  photos = {};
+  finished = {};
 
-  const fts = geojson.features || [];
-  if (!fts.length) { alert('El archivo no contiene geometrías'); resetProc(); return; }
-
-  fts.forEach((f, i) => {
-    const geom = reprojectGeom(f.geometry, fromProj);
-    if (!geom) return;
-
-    // Get polygon rings as [lat,lng] arrays for Leaflet
+  geojson.features.forEach((f, i) => {
+    let geom = f.geometry;
+    if (fromProj) {
+      if (geom.type === 'Polygon') geom = { ...geom, coordinates: geom.coordinates.map(ring => ring.map(c => reprojectCoords(c, fromProj))) };
+      else if (geom.type === 'MultiPolygon') geom = { ...geom, coordinates: geom.coordinates.map(poly => poly.map(ring => ring.map(c => reprojectCoords(c, fromProj)))) };
+    }
     let rings = [];
-    if (geom.type === 'Polygon') {
-      rings = [geom.coordinates[0].map(c => [c[1],c[0]])];
-    } else if (geom.type === 'MultiPolygon') {
-      rings = geom.coordinates.map(poly => poly[0].map(c => [c[1],c[0]]));
-    } else return;
-
-    // Compute centroid from first ring
+    if (geom.type === 'Polygon') rings = [geom.coordinates[0].map(c => [c[1], c[0]])];
+    else if (geom.type === 'MultiPolygon') rings = geom.coordinates.map(poly => poly[0].map(c => [c[1], c[0]]));
+    else return;
     const allPts = rings.flat();
-    const centroid = [
-      allPts.reduce((s,p)=>s+p[0],0)/allPts.length,
-      allPts.reduce((s,p)=>s+p[1],0)/allPts.length
-    ];
-
-    // Name from properties
-    const props  = f.properties || {};
-    const nameKey = Object.keys(props).find(k =>
-      /nombre|name|manzana|id|codigo|cod|num/i.test(k)
-    );
-    const name = nameKey ? String(props[nameKey]) : String(i+1);
-
-    features.push({ id: i, num: i+1, name, rings, centroid, props });
-    photos[i]   = photos[i]   || [];
-    finished[i] = finished[i] || false;
+    const centroid = [allPts.reduce((s, p) => s + p[0], 0) / allPts.length, allPts.reduce((s, p) => s + p[1], 0) / allPts.length];
+    const props = f.properties || {};
+    const nameKey = Object.keys(props).find(k => /nombre|name|manzana|id|codigo|cod|num/i.test(k));
+    const name = nameKey ? String(props[nameKey]) : String(i + 1);
+    features.push({ id: i, num: i + 1, name, rings, centroid, props });
+    photos[i] = [];
+    finished[i] = false;
   });
 
-  const n = features.length;
-  document.getElementById('proc-ok').textContent = `✓ ${n} manzana${n!==1?'s':''} cargadas`;
-  document.getElementById('prog-count').textContent = `0 / ${n}`;
+  if (!features.length) { alert('No se encontraron polígonos válidos'); resetProc(); return; }
 
+  document.getElementById('proc-ok').textContent = `✓ ${features.length} manzana${features.length !== 1 ? 's' : ''} cargadas`;
   setTimeout(() => launchApp(), 700);
 }
 
-
-// ═══════════════════════════════════════════════════
-//  FREE PHOTO MARKERS  (puntos libres en el mapa)
-// ═══════════════════════════════════════════════════
-// photoMarkers[featureId][photoIndex] = L.Marker
-const photoMarkers = {};
-
-function makePhotoIcon() {
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-    + '<circle cx="8" cy="8" r="6" fill="#ffffff" stroke="#0f1117" stroke-width="2.5"/>'
-    + '<circle cx="8" cy="8" r="2.5" fill="#0f1117" opacity="0.7"/></svg>';
-  return L.divIcon({ html: svg, className: '', iconSize: [16, 16], iconAnchor: [8, 8] });
+function showProc(msg) {
+  document.querySelector('.upload-grid').style.display = 'none';
+  document.querySelector('.shp-multi-note').style.display = 'none';
+  const ps = document.getElementById('proc-status');
+  ps.classList.add('show');
+  document.getElementById('proc-label').textContent = msg;
 }
 
-function syncPhotoMarkers(featureId) {
+function resetProc() {
+  document.querySelector('.upload-grid').style.display = 'grid';
+  document.querySelector('.shp-multi-note').style.display = 'block';
+  document.getElementById('proc-status').classList.remove('show');
+  document.getElementById('proc-ok').textContent = '';
+}
+
+function readFileBuffer(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsArrayBuffer(file); });
+}
+
+// ═══════════════════════════════════════════════════
+//  REFRESCAR MARCADORES EN EL MAPA (NUEVA FUNCIÓN)
+// ═══════════════════════════════════════════════════
+function refreshMapMarkers() {
   if (!map) return;
-  const pList = photos[featureId] || [];
-  if (!photoMarkers[featureId]) photoMarkers[featureId] = {};
 
-  // Remove markers for deleted photos
-  Object.keys(photoMarkers[featureId]).forEach(idx => {
-    if (!pList[idx]) {
-      map.removeLayer(photoMarkers[featureId][idx]);
-      delete photoMarkers[featureId][idx];
+  // Eliminar todos los marcadores existentes
+  offerMarkers.forEach(marker => {
+    if (map && marker) map.removeLayer(marker);
+  });
+  offerMarkers = [];
+
+  // Recolectar todas las fotos/ofertas
+  const allPhotos = [];
+
+  // Fotos dentro de manzanas
+  features.forEach(f => {
+    if (photos[f.id] && photos[f.id].length) {
+      allPhotos.push(...photos[f.id].map((p, idx) => ({
+        ...p,
+        featureId: f.id,
+        featureNum: f.num,
+        featureName: f.name,
+        photoIdx: idx
+      })));
     }
   });
 
-  // Add markers for new photos
-  pList.forEach((ph, idx) => {
-    if (!photoMarkers[featureId][idx]) {
-      const marker = L.marker([ph.lat, ph.lng], {
-        icon: makePhotoIcon(), interactive: true, zIndexOffset: 1000
-      });
-      marker.bindTooltip('Foto ' + (idx+1) + ' \u2014 ' + ph.lat.toFixed(5) + ', ' + ph.lng.toFixed(5),
-        { direction: 'top', className: 'lf-tt' });
-      marker.on('click', () => selectManzana(featureId));
-      marker.addTo(map);
-      photoMarkers[featureId][idx] = marker;
-    }
-  });
-}
+  // Ofertas externas
+  if (photos['standalone'] && photos['standalone'].length) {
+    allPhotos.push(...photos['standalone'].map((p, idx) => ({
+      ...p,
+      featureId: 'standalone',
+      featureNum: null,
+      featureName: 'Oferta Externa',
+      photoIdx: idx
+    })));
+  }
 
-function removeAllMarkersForFeature(featureId) {
-  if (!photoMarkers[featureId]) return;
-  Object.values(photoMarkers[featureId]).forEach(m => map && map.removeLayer(m));
-  photoMarkers[featureId] = {};
+  // Crear marcadores para cada foto/oferta
+  allPhotos.forEach(ph => {
+    let iconHtml;
+    if (ph.isOffer) {
+      // Icono de oferta: moneda dorada con signo $
+      iconHtml = '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26">' +
+        '<circle cx="13" cy="13" r="11" fill="#e0b83a" stroke="#ffffff" stroke-width="2"/>' +
+        '<circle cx="13" cy="13" r="9" fill="#f0c84a"/>' +
+        '<text x="13" y="18" text-anchor="middle" fill="#0f1117" font-size="12" font-weight="bold" font-family="Arial">$</text>' +
+        '</svg>';
+    } else {
+      // Icono de foto normal: cámara
+      iconHtml = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' +
+        '<circle cx="11" cy="11" r="9" fill="#e05c3a" stroke="#ffffff" stroke-width="2"/>' +
+        '<rect x="6" y="5" width="10" height="8" rx="1" fill="#ffffff" opacity="0.8"/>' +
+        '<circle cx="11" cy="9" r="2.5" fill="#e05c3a"/>' +
+        '</svg>';
+    }
+
+    const icon = L.divIcon({
+      html: iconHtml,
+      className: 'custom-marker',
+      iconSize: ph.isOffer ? [26, 26] : [22, 22],
+      iconAnchor: ph.isOffer ? [13, 13] : [11, 11],
+      popupAnchor: [0, -10]
+    });
+
+    const marker = L.marker([ph.lat, ph.lng], {
+      icon: icon,
+      interactive: true,
+      zIndexOffset: 500
+    });
+
+    // Crear contenido del popup
+    let popupContent = `<div style="min-width:180px; max-width:250px;">`;
+    if (ph.isOffer) {
+      popupContent += `<strong style="color:#e0b83a;">💰 OFERTA</strong><br>`;
+      if (ph.address) popupContent += `📍 ${ph.address}<br>`;
+      if (ph.phone) popupContent += `📞 ${ph.phone}<br>`;
+      if (ph.details) popupContent += `<div style="background:#1e2333; padding:4px; border-radius:4px; margin:4px 0; font-size:11px;">${ph.details}</div>`;
+    } else {
+      popupContent += `<strong style="color:#e05c3a;">📸 FOTO</strong><br>`;
+    }
+    if (ph.featureNum) popupContent += `🏘️ Manzana ${ph.featureNum}<br>`;
+    popupContent += `<span style="font-family:monospace; font-size:10px;">📍 ${ph.lat.toFixed(6)}, ${ph.lng.toFixed(6)}</span><br>`;
+    popupContent += `<span style="font-size:10px; color:#7a7f94;">📅 ${new Date(ph.fecha).toLocaleString()}</span>`;
+    popupContent += `</div>`;
+
+    marker.bindPopup(popupContent, { maxWidth: 250, className: 'offer-popup' });
+
+    // Al hacer clic en el marcador, seleccionar la manzana si aplica
+    marker.on('click', () => {
+      if (ph.featureId !== 'standalone' && features.length) {
+        selectManzana(ph.featureId);
+      } else if (ph.featureId === 'standalone') {
+        renderStandalonePanel();
+        openPanel();
+      }
+    });
+
+    marker.addTo(map);
+    offerMarkers.push(marker);
+  });
 }
 
 // ═══════════════════════════════════════════════════
-//  APP LAUNCH
+//  LAUNCH APP
 // ═══════════════════════════════════════════════════
 function launchApp() {
   document.getElementById('upload-screen').style.display = 'none';
   document.getElementById('app-screen').classList.add('show');
 
-  // Init Leaflet map
-  map = L.map('map', { zoomControl:true, attributionControl:true });
+  const hasFeatures = features.length > 0;
+  document.getElementById('legend').style.display = hasFeatures ? 'flex' : 'none';
+  document.getElementById('progress-wrap').style.display = hasFeatures ? 'flex' : 'none';
+  if (hasFeatures) updateProgress();
+
+  if (map) map.remove();
+  map = L.map('map', { zoomControl: true });
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>',
-    maxZoom:19
+    attribution: '© OpenStreetMap © CARTO', maxZoom: 19
   }).addTo(map);
 
-  // Draw polygons
   const bounds = [];
+
   features.forEach(f => {
-    // Para MultiPolígono: guardar todos los L.polygon en un array
     leafletLayers[f.id] = [];
     f.rings.forEach(ring => {
-      const poly = L.polygon(ring, { className:'lf-empty', weight:1.5 });
+      const poly = L.polygon(ring, { className: 'lf-empty', weight: 1.5 });
       poly.on('click', () => selectManzana(f.id));
-      poly.bindTooltip(`Manzana ${f.num}`, { permanent:false, direction:'top', className:'lf-tt' });
+      poly.bindTooltip(`Manzana ${f.num}`, { direction: 'top' });
       poly.addTo(map);
       leafletLayers[f.id].push(poly);
       bounds.push(...ring);
     });
   });
 
-  if (bounds.length) map.fitBounds(L.latLngBounds(bounds), { padding:[30,30] });
-  updateProgress();
+  // Refrescar marcadores (reemplaza a drawOfferMarkers)
+  refreshMapMarkers();
+
+  if (bounds.length) map.fitBounds(L.latLngBounds(bounds), { padding: [30, 30] });
+  else if (isMercadoMode) map.setView([4.6097, -74.0817], 13);
+
+  updateMemoryUI();
+  guardarSesion();
 }
 
 // ═══════════════════════════════════════════════════
-//  GEOLOCATION
+//  GEOLOCALIZACIÓN
 // ═══════════════════════════════════════════════════
-let locationMarker   = null;
-let locationCircle   = null;
-let locationWatchId  = null;
-let locationActive   = false;
-
 function toggleLocation() {
-  if (locationActive) {
-    stopLocation();
-  } else {
-    startLocation();
-  }
+  if (locationActive) stopLocation();
+  else startLocation();
 }
 
 function startLocation() {
-  if (!navigator.geolocation) {
-    alert('Tu navegador no soporta geolocalización.');
-    return;
-  }
+  if (!navigator.geolocation) { alert('Geolocalización no soportada'); return; }
   const btn = document.getElementById('btn-locate');
-  btn.classList.add('loading');
   btn.textContent = '⏳';
-
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      locationActive = true;
-      btn.classList.remove('loading');
-      btn.classList.add('active');
-      btn.textContent = '🔵';
-
-      updateLocationMarker(pos);
-
-      // Centrar el mapa en la ubicación
-      map.setView([pos.coords.latitude, pos.coords.longitude], Math.max(map.getZoom(), 17));
-
-      // Seguimiento continuo
-      locationWatchId = navigator.geolocation.watchPosition(
-        updateLocationMarker,
-        (err) => console.warn('GPS error:', err.message),
-        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
-      );
-    },
-    (err) => {
-      btn.classList.remove('loading');
-      btn.textContent = '📍';
-      const msgs = {
-        1: 'Permiso de ubicación denegado.\nActívalo en la configuración del navegador.',
-        2: 'No se pudo obtener la ubicación. Verifica que el GPS esté activo.',
-        3: 'Tiempo de espera agotado. Intenta de nuevo.'
-      };
-      alert('⚠️ ' + (msgs[err.code] || 'Error de geolocalización.'));
-    },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-  );
+  navigator.geolocation.getCurrentPosition(pos => {
+    locationActive = true;
+    btn.classList.add('active');
+    btn.textContent = '🔵';
+    updateLocationMarker(pos);
+    map.setView([pos.coords.latitude, pos.coords.longitude], Math.max(map.getZoom(), 17));
+    locationWatchId = navigator.geolocation.watchPosition(updateLocationMarker, err => console.warn(err), { enableHighAccuracy: true });
+  }, err => { btn.textContent = '📍'; alert('No se pudo obtener ubicación'); }, { enableHighAccuracy: true });
 }
 
 function updateLocationMarker(pos) {
-  const lat = pos.coords.latitude;
-  const lng = pos.coords.longitude;
-  const acc = pos.coords.accuracy; // metros
-
-  // Crear icono del punto azul pulsante
+  const lat = pos.coords.latitude, lng = pos.coords.longitude, acc = pos.coords.accuracy;
   const dotHtml = '<div class="gps-dot"><div class="gps-dot-pulse"></div><div class="gps-dot-inner"></div></div>';
-  const icon = L.divIcon({ html: dotHtml, className: '', iconSize: [16,16], iconAnchor: [8,8] });
-
+  const icon = L.divIcon({ html: dotHtml, className: '', iconSize: [16, 16], iconAnchor: [8, 8] });
   if (!locationMarker) {
-    locationMarker = L.marker([lat, lng], { icon, zIndexOffset: 2000, interactive: false }).addTo(map);
-    locationCircle  = L.circle([lat, lng], {
-      radius: acc, color: '#4a9eff', fillColor: '#4a9eff',
-      fillOpacity: 0.08, weight: 1, opacity: 0.4
-    }).addTo(map);
+    locationMarker = L.marker([lat, lng], { icon, zIndexOffset: 2000 }).addTo(map);
+    locationCircle = L.circle([lat, lng], { radius: acc, color: '#4a9eff', fillColor: '#4a9eff', fillOpacity: 0.08, weight: 1 }).addTo(map);
   } else {
     locationMarker.setLatLng([lat, lng]);
     locationCircle.setLatLng([lat, lng]);
@@ -806,87 +532,86 @@ function updateLocationMarker(pos) {
 
 function stopLocation() {
   locationActive = false;
-  if (locationWatchId !== null) {
-    navigator.geolocation.clearWatch(locationWatchId);
-    locationWatchId = null;
-  }
-  if (locationMarker) { map.removeLayer(locationMarker); locationMarker = null; }
-  if (locationCircle) { map.removeLayer(locationCircle); locationCircle = null; }
-  const btn = document.getElementById('btn-locate');
-  btn.classList.remove('active', 'loading');
-  btn.textContent = '📍';
+  if (locationWatchId) navigator.geolocation.clearWatch(locationWatchId);
+  if (locationMarker) map.removeLayer(locationMarker);
+  if (locationCircle) map.removeLayer(locationCircle);
+  locationMarker = locationCircle = null;
+  document.getElementById('btn-locate').classList.remove('active');
+  document.getElementById('btn-locate').textContent = '📍';
 }
 
-
+// ═══════════════════════════════════════════════════
+//  PANEL Y SELECCIÓN DE MANZANA
+// ═══════════════════════════════════════════════════
 function togglePanel() {
   panelOpen = !panelOpen;
   document.getElementById('bottom-panel').classList.toggle('open', panelOpen);
 }
 
 function openPanel() {
-  if (!panelOpen) { panelOpen = true; document.getElementById('bottom-panel').classList.add('open'); }
+  if (!panelOpen) {
+    panelOpen = true;
+    document.getElementById('bottom-panel').classList.add('open');
+  }
 }
 
 function selectManzana(id) {
+  if (!features.length) return;
   currentId = id;
   if (!photos[id]) photos[id] = [];
 
-  // Reset all polygon styles
   features.forEach(f => {
     const layers = leafletLayers[f.id];
     if (!layers) return;
-    const cls = finished[f.id] ? 'lf-finished'
-      : hasPhotos(f.id) ? 'lf-partial' : 'lf-empty';
+    const cls = finished[f.id] ? 'lf-finished' : (photos[f.id] && photos[f.id].length ? 'lf-partial' : 'lf-empty');
     layers.forEach(ly => ly.setStyle({ className: cls, weight: 1.5 }));
   });
-  // Highlight selected
-  const selLayers = leafletLayers[id];
-  if (selLayers) selLayers.forEach(ly => ly.setStyle({ className:'lf-selected', weight:2.5 }));
+  if (leafletLayers[id]) {
+    leafletLayers[id].forEach(ly => ly.setStyle({ className: 'lf-selected', weight: 2.5 }));
+  }
 
   const f = features.find(x => x.id === id);
-  document.getElementById('panel-title').innerHTML =
-    `Manzana ${f.num} — <span style="color:var(--muted);font-size:0.6rem">${f.name}</span>`;
-
+  document.getElementById('panel-title').innerHTML = `Manzana ${f.num} — ${f.name}`;
   document.getElementById('panel-empty').style.display = 'none';
   document.getElementById('panel-content').style.display = 'block';
   document.getElementById('mz-num').textContent = f.num;
-  document.getElementById('mz-coords').textContent =
-    `${f.centroid[0].toFixed(5)}, ${f.centroid[1].toFixed(5)}`;
-
+  document.getElementById('mz-coords').textContent = `${f.centroid[0].toFixed(5)}, ${f.centroid[1].toFixed(5)}`;
   openPanel();
   renderPanelContent();
 }
 
 function renderPanelContent() {
-  const id   = currentId;
+  const id = currentId;
   const pList = photos[id] || [];
-  const isF  = !!finished[id];
+  const isF = !!finished[id];
 
   document.getElementById('mz-photo-count').textContent = pList.length;
-
   const badge = document.getElementById('mz-badge');
   badge.className = 'status-badge';
-  if (isF)          { badge.textContent='✓ Finalizada'; badge.classList.add('finished'); }
-  else if (pList.length) { badge.textContent=pList.length+' foto'+(pList.length>1?'s':''); badge.classList.add('partial'); }
-  else              { badge.textContent='Sin fotos'; badge.classList.add('empty'); }
+  if (isF) { badge.textContent = '✓ Finalizada'; badge.classList.add('finished'); }
+  else if (pList.length) { badge.textContent = pList.length + ' foto' + (pList.length > 1 ? 's' : ''); badge.classList.add('partial'); }
+  else { badge.textContent = 'Sin fotos'; badge.classList.add('empty'); }
 
-  document.getElementById('fin-banner').classList.toggle('show', isF);
-  document.getElementById('btn-finish').style.display = isF ? 'none' : 'flex';
+  const finBanner = document.getElementById('fin-banner');
+  if (finBanner) finBanner.style.display = isF ? 'flex' : 'none';
+  const btnFinish = document.getElementById('btn-finish');
+  if (btnFinish) btnFinish.style.display = isF ? 'none' : 'flex';
   const btnPin = document.getElementById('btn-pin');
   if (btnPin) btnPin.style.display = isF ? 'none' : 'flex';
 
-  // Photo list
   const list = document.getElementById('photo-list');
+  if (!list) return;
   list.innerHTML = '';
   pList.forEach((ph, idx) => {
     const item = document.createElement('div'); item.className = 'photo-item';
-    const img  = document.createElement('img'); img.src = ph.dataUrl;
-    img.onclick = () => openLightboxByIndex(idx);
+    const img = document.createElement('img'); img.src = ph.dataUrl;
+    img.onclick = () => openLightbox(idx);
     const info = document.createElement('div'); info.className = 'photo-item-info';
     const coord = document.createElement('div'); coord.className = 'photo-item-coord';
     coord.textContent = ph.lat.toFixed(5) + ', ' + ph.lng.toFixed(5);
     const nm = document.createElement('div'); nm.className = 'photo-item-name';
-    nm.textContent = ph.name;
+    if (ph.isOffer) nm.innerHTML = `<span style="color:var(--partial)">💰 Oferta</span>${ph.address ? ' | ' + ph.address : ''}${ph.phone ? ' | ' + ph.phone : ''}`;
+    else nm.textContent = ph.name || 'Foto';
     info.appendChild(coord); info.appendChild(nm);
     item.appendChild(img); item.appendChild(info);
     if (!isF) {
@@ -896,35 +621,109 @@ function renderPanelContent() {
     }
     list.appendChild(item);
   });
-
-  document.getElementById('btn-dl').style.display = pList.length > 0 ? 'flex' : 'none';
-  updatePolygonStyle(id);
+  const btnDl = document.getElementById('btn-dl');
+  if (btnDl) btnDl.style.display = pList.length ? 'flex' : 'none';
   updateProgress();
-  syncPhotoMarkers(id);
   guardarSesion();
 }
 
-// ═══════════════════════════════════════════════════
-//  PIN MODE  — el usuario toca el mapa para ubicar la foto
-// ═══════════════════════════════════════════════════
-let pinModeActive = false;
-let pinMapClickHandler = null;
+function openLightbox(idx) {
+  const pList = photos[currentId] || [];
+  const ph = pList[idx];
+  if (!ph) return;
+  document.getElementById('lb-img').src = ph.dataUrl;
+  const f = features.find(x => x.id === currentId);
+  document.getElementById('lb-caption').textContent = f ? `Manzana ${f.num} — Foto ${idx + 1}` : `Oferta ${idx + 1}`;
+  document.getElementById('lightbox').classList.add('show');
+}
 
-function enterPinMode() {
-  if (!currentId && currentId !== 0) return;
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('show');
+}
+
+function removePhoto(idx) {
+  if (photos[currentId]) {
+    photos[currentId].splice(idx, 1);
+    renderPanelContent();
+    updateMemoryUI();
+    guardarSesion();
+    refreshMapMarkers();
+  }
+}
+
+function clearManzana() {
+  if (currentId === null || currentId === undefined) return;
+  if (!photos[currentId] || !photos[currentId].length) return;
+  if (confirm(`¿Eliminar las ${photos[currentId].length} fotos de esta manzana?`)) {
+    photos[currentId] = [];
+    finished[currentId] = false;
+    renderPanelContent();
+    updateMemoryUI();
+    guardarSesion();
+    refreshMapMarkers();
+  }
+}
+
+function finishManzana() {
+  if (currentId !== null && currentId !== undefined) {
+    finished[currentId] = true;
+    renderPanelContent();
+    refreshMapMarkers();
+  }
+}
+
+function unfinishManzana() {
+  if (currentId !== null && currentId !== undefined) {
+    finished[currentId] = false;
+    renderPanelContent();
+    refreshMapMarkers();
+  }
+}
+
+function downloadPhotos() {
+  const pList = photos[currentId] || [];
+  const f = features.find(x => x.id === currentId);
+  pList.forEach((ph, idx) => {
+    const a = document.createElement('a');
+    a.href = ph.dataUrl;
+    a.download = f ? `Manzana_${f.num}_foto${idx + 1}.jpg` : `oferta_${idx + 1}.jpg`;
+    a.click();
+  });
+}
+
+// ═══════════════════════════════════════════════════
+//  OFERTAS Y PIN MODE
+// ═══════════════════════════════════════════════════
+function enterOfferMode() {
+  offerModeActive = true;
   pinModeActive = true;
   document.getElementById('map-wrap').classList.add('pin-mode');
   document.getElementById('pin-banner').style.display = 'block';
+  document.getElementById('pin-banner').textContent = '💰 Ubica el punto de la oferta...';
   document.getElementById('pin-cancel').style.display = 'block';
-  document.getElementById('btn-pin').classList.add('active');
-  document.getElementById('btn-pin').textContent = '⏳ Toca el mapa...';
-  // Cerrar panel para ver el mapa
-  if (panelOpen) togglePanel();
-
-  pinMapClickHandler = function(e) {
+  pinMapClickHandler = (e) => {
     if (!pinModeActive) return;
     pendingLatLng = { lat: e.latlng.lat, lng: e.latlng.lng };
-    cancelPinMode(true); // true = conservar pendingLatLng
+    cancelPinMode(true);
+    openPhotoSourceModal();
+  };
+  map.once('click', pinMapClickHandler);
+}
+
+function enterPinMode() {
+  if (!currentId && currentId !== 0 && features.length) return;
+  offerModeActive = false;
+  pinModeActive = true;
+  document.getElementById('map-wrap').classList.add('pin-mode');
+  document.getElementById('pin-banner').style.display = 'block';
+  document.getElementById('pin-banner').textContent = '📍 Toca el punto exacto en el mapa';
+  document.getElementById('pin-cancel').style.display = 'block';
+  const btnPin = document.getElementById('btn-pin');
+  if (btnPin) { btnPin.classList.add('active'); btnPin.textContent = '⏳ Toca el mapa...'; }
+  pinMapClickHandler = (e) => {
+    if (!pinModeActive) return;
+    pendingLatLng = { lat: e.latlng.lat, lng: e.latlng.lng };
+    cancelPinMode(true);
     openPhotoSourceModal();
   };
   map.once('click', pinMapClickHandler);
@@ -935,22 +734,18 @@ function cancelPinMode(keepLatLng) {
   document.getElementById('map-wrap').classList.remove('pin-mode');
   document.getElementById('pin-banner').style.display = 'none';
   document.getElementById('pin-cancel').style.display = 'none';
-  const btn = document.getElementById('btn-pin');
-  if (btn) { btn.classList.remove('active'); btn.textContent = '📍 Agregar foto'; }
+  const btnPin = document.getElementById('btn-pin');
+  if (btnPin) { btnPin.classList.remove('active'); btnPin.textContent = '📍 Agregar foto'; }
   if (pinMapClickHandler) { map.off('click', pinMapClickHandler); pinMapClickHandler = null; }
   if (!keepLatLng) pendingLatLng = null;
 }
 
-// ═══════════════════════════════════════════════════
-//  PHOTOS
-// ═══════════════════════════════════════════════════
 function openPhotoSourceModal() {
-  const modal = document.getElementById('photo-source-modal');
-  modal.style.display = 'flex';
-  const inner = modal.querySelector('div');
-  inner.style.transform = 'translateY(100%)';
-  inner.style.transition = 'transform 0.25s ease';
-  requestAnimationFrame(() => requestAnimationFrame(() => { inner.style.transform = 'translateY(0)'; }));
+  document.getElementById('photo-source-modal').style.display = 'flex';
+}
+
+function closePhotoModal() {
+  document.getElementById('photo-source-modal').style.display = 'none';
 }
 
 function choosePhotoSource(source) {
@@ -959,57 +754,6 @@ function choosePhotoSource(source) {
   document.getElementById(inputId).click();
 }
 
-function closePhotoModal() {
-  const modal = document.getElementById('photo-source-modal');
-  const inner = modal.querySelector('div');
-  inner.style.transform = 'translateY(100%)';
-  setTimeout(() => {
-    modal.style.display = 'none';
-    inner.style.transform = '';
-    // Solo limpiar si el usuario canceló (no eligió ninguna fuente)
-    // pendingLatLng se limpia en handlePhotoFile después de usarse
-  }, 220);
-}
-
-// ═══════════════════════════════════════════════════
-//  MEMORY MANAGEMENT
-// ═══════════════════════════════════════════════════
-const MEM_LIMIT_MB  = 400;  // límite total recomendado
-const MEM_WARN_PCT  = 0.70; // 70% → advertencia amarilla
-const MEM_BLOCK_PCT = 0.90; // 90% → bloqueo rojo
-
-function calcMemoryMB() {
-  let bytes = 0;
-  Object.values(photos).forEach(pList => {
-    (pList||[]).forEach(ph => { bytes += ph.dataUrl.length * 0.75; });
-  });
-  return bytes / (1024 * 1024);
-}
-
-function updateMemoryUI() {
-  const mb     = calcMemoryMB();
-  const pct    = Math.min(mb / MEM_LIMIT_MB, 1);
-  const fill   = document.getElementById('mem-fill');
-  const count  = document.getElementById('mem-count');
-  const wrap   = document.getElementById('mem-wrap');
-  if (!fill) return;
-
-  wrap.style.display = 'flex';
-  fill.style.width   = (pct * 100).toFixed(1) + '%';
-  count.textContent  = mb.toFixed(1) + ' MB / ' + MEM_LIMIT_MB + ' MB';
-
-  fill.className  = 'mem-fill';
-  count.className = 'mem-count';
-  if (pct >= MEM_BLOCK_PCT) {
-    fill.classList.add('danger');
-    count.classList.add('danger');
-  } else if (pct >= MEM_WARN_PCT) {
-    fill.classList.add('warn');
-    count.classList.add('warn');
-  }
-}
-
-// Comprimir imagen a máx 1200px, calidad 72%
 function compressImage(dataUrl) {
   return new Promise(res => {
     const img = new Image();
@@ -1017,469 +761,430 @@ function compressImage(dataUrl) {
       const MAX = 1920;
       const scale = Math.min(1, MAX / Math.max(img.width, img.height));
       const c = document.createElement('canvas');
-      c.width  = Math.round(img.width  * scale);
+      c.width = Math.round(img.width * scale);
       c.height = Math.round(img.height * scale);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      res(c.toDataURL('image/jpeg', 0.90));
+      res(c.toDataURL('image/jpeg', 0.85));
     };
     img.onerror = () => res(dataUrl);
     img.src = dataUrl;
   });
 }
 
-function handlePhotoFile(event) {
+async function handlePhotoFile(event) {
   const file = event.target.files[0];
-  if (!file || !pendingLatLng) { event.target.value=''; return; }
+  if (!file || !pendingLatLng) { event.target.value = ''; return; }
   event.target.value = '';
   const ll = { ...pendingLatLng };
   pendingLatLng = null;
 
-  // Check memory
   const mb = calcMemoryMB();
   if (mb / MEM_LIMIT_MB >= MEM_BLOCK_PCT) {
-    alert('⚠️ Memoria casi llena (' + mb.toFixed(1) + ' MB)\nGenera el reporte HTML antes de continuar.');
+    alert('Memoria casi llena. Exporta el reporte antes de continuar.');
     return;
   }
 
   const reader = new FileReader();
   reader.onload = async (e) => {
-    const id = currentId;
-    if (!photos[id]) photos[id] = [];
     const compressed = await compressImage(e.target.result);
-    photos[id].push({ lat: ll.lat, lng: ll.lng, dataUrl: compressed, name: file.name });
+    let targetId = currentId;
 
-    // Reopen panel and render
-    if (!panelOpen) togglePanel();
-    renderPanelContent();
-    updateMemoryUI();
-
-    // Memory warning
-    const newMb  = calcMemoryMB();
-    const newPct = newMb / MEM_LIMIT_MB;
-    if (newPct >= MEM_WARN_PCT && newPct < MEM_BLOCK_PCT) {
-      const totalFotos = Object.values(photos).reduce((s,a) => s + a.length, 0);
-      const threshold = Math.floor(newPct * 10);
-      if (threshold !== handlePhotoFile._lastWarn) {
-        handlePhotoFile._lastWarn = threshold;
-        setTimeout(() => alert(
-          '⚠️ Memoria al ' + Math.round(newPct*100) + '%\n' +
-          totalFotos + ' fotos · ' + newMb.toFixed(1) + ' MB / ' + MEM_LIMIT_MB + ' MB\n\n' +
-          'Exporta el reporte pronto para evitar pérdida de datos.'
-        ), 300);
-      }
+    if (offerModeActive || targetId === null || !features.length) {
+      const found = features.find(f => f.rings.some(ring => isPointInPolygon([ll.lat, ll.lng], ring)));
+      targetId = found ? found.id : 'standalone';
     }
+
+    if (!photos[targetId]) photos[targetId] = [];
+
+    const photoData = {
+      lat: ll.lat,
+      lng: ll.lng,
+      dataUrl: compressed,
+      name: file.name,
+      isOffer: offerModeActive,
+      fecha: new Date().toISOString()
+    };
+
+    photos[targetId].push(photoData);
+    lastPhotoId = { featureId: targetId, photoIdx: photos[targetId].length - 1 };
+
+    if (offerModeActive) {
+      openOfferForm();
+    } else {
+      if (targetId !== 'standalone' && features.length) selectManzana(targetId);
+      else renderStandalonePanel();
+    }
+    updateMemoryUI();
+    updateProgress();
+    guardarSesion();
+
+    // Refrescar marcadores en el mapa
+    refreshMapMarkers();
   };
   reader.readAsDataURL(file);
 }
-handlePhotoFile._lastWarn = -1;
 
-function removePhoto(idx) {
-  const p = photos[currentId];
-  if (p && p[idx] !== undefined) {
-    p.splice(idx, 1);
-    // Remove marker for this index and re-sync all
-    removeAllMarkersForFeature(currentId);
-  }
-  renderPanelContent();
-  updateMemoryUI();
+function renderStandalonePanel() {
+  document.getElementById('panel-title').innerHTML = 'Ofertas Externas';
+  document.getElementById('panel-empty').style.display = 'none';
+  document.getElementById('panel-content').style.display = 'block';
+  document.getElementById('mz-num').textContent = 'Externas';
+  document.getElementById('mz-coords').textContent = '';
+  document.getElementById('mz-badge').className = 'status-badge partial';
+  document.getElementById('mz-badge').textContent = 'Ofertas sueltas';
+  const finBanner = document.getElementById('fin-banner');
+  if (finBanner) finBanner.style.display = 'none';
+  const btnFinish = document.getElementById('btn-finish');
+  if (btnFinish) btnFinish.style.display = 'none';
+  const btnPin = document.getElementById('btn-pin');
+  if (btnPin) btnPin.style.display = 'flex';
+  document.getElementById('mz-photo-count').textContent = (photos['standalone'] || []).length;
+
+  const list = document.getElementById('photo-list');
+  if (!list) return;
+  list.innerHTML = '';
+  (photos['standalone'] || []).forEach((ph, idx) => {
+    const item = document.createElement('div'); item.className = 'photo-item';
+    const img = document.createElement('img'); img.src = ph.dataUrl;
+    img.onclick = () => { document.getElementById('lb-img').src = ph.dataUrl; document.getElementById('lb-caption').textContent = `Oferta ${idx + 1} · ${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}`; document.getElementById('lightbox').classList.add('show'); };
+    const info = document.createElement('div'); info.className = 'photo-item-info';
+    const coord = document.createElement('div'); coord.className = 'photo-item-coord';
+    coord.textContent = ph.lat.toFixed(5) + ', ' + ph.lng.toFixed(5);
+    const nm = document.createElement('div'); nm.className = 'photo-item-name';
+    nm.innerHTML = `<span style="color:var(--partial)">💰 Oferta</span>${ph.address ? ' | ' + ph.address : ''}${ph.phone ? ' | ' + ph.phone : ''}`;
+    info.appendChild(coord); info.appendChild(nm);
+    item.appendChild(img); item.appendChild(info);
+    const rm = document.createElement('button'); rm.className = 'photo-item-rm'; rm.textContent = '✕';
+    rm.onclick = () => {
+      photos['standalone'].splice(idx, 1);
+      renderStandalonePanel();
+      updateMemoryUI();
+      guardarSesion();
+      refreshMapMarkers();
+    };
+    item.appendChild(rm);
+    list.appendChild(item);
+  });
+  openPanel();
 }
-function clearManzana() {
-  if (!currentId && currentId !== 0) return;
-  const pList = photos[currentId] || [];
-  const f = features.find(f => f.id === currentId);
-  if (!pList.length) {
-    // Nada que limpiar
-    finished[currentId] = false;
-    removeAllMarkersForFeature(currentId);
-    renderPanelContent(); updateMemoryUI(); return;
+
+function isPointInPolygon(point, polygon) {
+  const x = point[0], y = point[1];
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
   }
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
-  overlay.innerHTML = `
-    <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:1.6rem 1.4rem;max-width:320px;width:100%;display:flex;flex-direction:column;gap:1rem;text-align:center">
-      <div style="font-size:2rem">🗑</div>
-      <p style="font-weight:700">¿Eliminar fotos?</p>
-      <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;line-height:1.7">Se eliminarán las ${pList.length} foto${pList.length>1?'s':''} de Manzana ${f?.num}.</p>
-      <div style="display:flex;gap:0.7rem;margin-top:0.3rem">
-        <button id="_cl_no" style="flex:1;padding:0.75rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">Cancelar</button>
-        <button id="_cl_si" style="flex:1;padding:0.75rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">Eliminar</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  document.getElementById('_cl_si').onclick = () => {
-    document.body.removeChild(overlay);
-    photos[currentId] = [];
-    finished[currentId] = false;
-    removeAllMarkersForFeature(currentId);
-    renderPanelContent(); updateMemoryUI();
-  };
-  document.getElementById('_cl_no').onclick = () => document.body.removeChild(overlay);
+  return inside;
 }
-function finishManzana()   { finished[currentId]=true;  renderPanelContent(); }
-function unfinishManzana() { finished[currentId]=false; renderPanelContent(); }
 
-function hasPhotos(id) { return (photos[id]||[]).length > 0; }
+function openOfferForm() {
+  document.getElementById('off-address').value = '';
+  document.getElementById('off-phone').value = '';
+  document.getElementById('off-details').value = '';
+  document.getElementById('offer-form-modal').style.display = 'flex';
+}
 
-function updatePolygonStyle(id) {
-  const layers = leafletLayers[id];
-  if (!layers || !layers.length) return;
-  const cls = id === currentId ? 'lf-selected'
-    : finished[id] ? 'lf-finished'
-    : hasPhotos(id) ? 'lf-partial' : 'lf-empty';
-  const w = id === currentId ? 2.5 : 1.5;
-  layers.forEach(ly => ly.setStyle({ className: cls, weight: w }));
+function closeOfferForm() {
+  document.getElementById('offer-form-modal').style.display = 'none';
+  if (lastPhotoId && lastPhotoId.featureId !== 'standalone' && features.length) selectManzana(lastPhotoId.featureId);
+  else renderStandalonePanel();
+}
+
+function saveOfferData() {
+  if (!lastPhotoId) return;
+  const p = photos[lastPhotoId.featureId][lastPhotoId.photoIdx];
+  p.address = document.getElementById('off-address').value.trim();
+  p.phone = document.getElementById('off-phone').value.trim();
+  p.details = document.getElementById('off-details').value.trim();
+  closeOfferForm();
+  guardarSesion();
+
+  // Refrescar marcadores en el mapa
+  refreshMapMarkers();
+
+  if (lastPhotoId.featureId !== 'standalone' && features.length) {
+    selectManzana(lastPhotoId.featureId);
+  } else {
+    renderStandalonePanel();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  EXPORTAR A EXCEL CON IMÁGENES
+// ═══════════════════════════════════════════════════
+async function exportOfertasToExcel() {
+  const loadingDiv = document.createElement('div');
+  loadingDiv.className = 'loading-overlay';
+  loadingDiv.innerHTML = `<div class="loading-spinner"></div><div style="color:white;">Generando Excel con imágenes...</div><div style="color:#7a7f94;font-size:12px;">Por favor espera</div>`;
+  document.body.appendChild(loadingDiv);
+
+  try {
+    const allItems = [];
+
+    const addItemsFromFeature = (featureId, featureName, featureNum) => {
+      const items = photos[featureId] || [];
+      items.forEach((photo, idx) => {
+        allItems.push({
+          fecha: photo.fecha || new Date().toISOString(),
+          lat: photo.lat,
+          lng: photo.lng,
+          direccion: photo.address || '',
+          telefono: photo.phone || '',
+          detalles: photo.details || '',
+          manzana: featureName || (featureId === 'standalone' ? 'Oferta Externa' : `Manzana ${featureNum}`),
+          tipo: photo.isOffer ? 'Oferta' : 'Foto Normal',
+          usuario: usuarioActual,
+          imagenDataUrl: photo.dataUrl,
+          nombreArchivo: photo.name || `foto_${idx + 1}.jpg`
+        });
+      });
+    };
+
+    features.forEach(f => {
+      addItemsFromFeature(f.id, f.name, f.num);
+    });
+
+    addItemsFromFeature('standalone', 'Oferta Externa', null);
+
+    if (allItems.length === 0) {
+      loadingDiv.remove();
+      alert('No hay fotos u ofertas para exportar.');
+      return;
+    }
+
+    const wb = XLSX.utils.book_new();
+
+    const sheetData = [
+      ['Fecha', 'Hora', 'Latitud', 'Longitud', 'Dirección', 'Teléfono', 'Detalles', 'Manzana', 'Tipo', 'Usuario', 'Nombre Archivo', 'FOTO']
+    ];
+
+    allItems.forEach(item => {
+      const fechaObj = new Date(item.fecha);
+      const fechaStr = fechaObj.toLocaleDateString('es-CO');
+      const horaStr = fechaObj.toLocaleTimeString('es-CO');
+
+      sheetData.push([
+        fechaStr,
+        horaStr,
+        item.lat.toFixed(6),
+        item.lng.toFixed(6),
+        item.direccion,
+        item.telefono,
+        item.detalles,
+        item.manzana,
+        item.tipo,
+        item.usuario,
+        item.nombreArchivo,
+        ''
+      ]);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+    ws['!cols'] = [
+      { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 14 },
+      { wch: 30 }, { wch: 15 }, { wch: 40 }, { wch: 20 },
+      { wch: 12 }, { wch: 20 }, { wch: 25 }, { wch: 30 }
+    ];
+
+    const headerStyle = {
+      fill: { fgColor: { rgb: "E05C3A" } },
+      font: { color: { rgb: "FFFFFF" }, bold: true },
+      alignment: { horizontal: "center" }
+    };
+
+    for (let col = 0; col < sheetData[0].length; col++) {
+      const cellRef = XLSX.utils.encode_cell({ r: 0, c: col });
+      if (!ws[cellRef]) ws[cellRef] = {};
+      ws[cellRef].s = headerStyle;
+    }
+
+    // Agregar imágenes
+    const drawings = [];
+    for (let i = 0; i < allItems.length; i++) {
+      const item = allItems[i];
+      const rowIdx = i + 1;
+      const colIdx = 11;
+
+      const imgData = item.imagenDataUrl.split(',')[1];
+      drawings.push({
+        type: 'image',
+        data: imgData,
+        position: { row: rowIdx, col: colIdx },
+        width: 80,
+        height: 80
+      });
+    }
+
+    if (drawings.length > 0) {
+      ws['!drawings'] = drawings;
+    }
+
+    allItems.forEach((item, i) => {
+      const rowIdx = i + 1;
+      const cellRef = XLSX.utils.encode_cell({ r: rowIdx, c: 11 });
+      if (!ws[cellRef]) ws[cellRef] = { t: 's', v: 'Ver imagen' };
+    });
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Ofertas y Registros');
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const fileName = `ofertas_registro_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`;
+    saveAs(blob, fileName);
+
+    loadingDiv.remove();
+    alert(`✅ Exportación completada\n📊 ${allItems.length} registros exportados a Excel con imágenes incrustadas.`);
+
+  } catch (error) {
+    loadingDiv.remove();
+    console.error('Error exportando Excel:', error);
+    alert('Error al exportar: ' + error.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  MEMORIA Y PROGRESO
+// ═══════════════════════════════════════════════════
+function calcMemoryMB() {
+  let bytes = 0;
+  Object.values(photos).forEach(pList => { (pList || []).forEach(ph => { bytes += ph.dataUrl.length * 0.75; }); });
+  return bytes / (1024 * 1024);
+}
+
+function updateMemoryUI() {
+  const mb = calcMemoryMB();
+  const pct = Math.min(mb / MEM_LIMIT_MB, 1);
+  const fill = document.getElementById('mem-fill');
+  const count = document.getElementById('mem-count');
+  const wrap = document.getElementById('mem-wrap');
+  if (!fill) return;
+  wrap.style.display = 'flex';
+  fill.style.width = (pct * 100).toFixed(1) + '%';
+  count.textContent = mb.toFixed(1) + ' MB / ' + MEM_LIMIT_MB + ' MB';
+  fill.className = 'mem-fill';
+  count.className = 'mem-count';
+  if (pct >= MEM_BLOCK_PCT) { fill.classList.add('danger'); count.classList.add('danger'); }
+  else if (pct >= MEM_WARN_PCT) { fill.classList.add('warn'); count.classList.add('warn'); }
 }
 
 function updateProgress() {
+  if (!features.length) return;
   const total = features.length;
-  const fin   = features.filter(f => finished[f.id]).length;
-  document.getElementById('prog-fill').style.width  = total ? (fin/total*100)+'%' : '0%';
+  const fin = features.filter(f => finished[f.id]).length;
+  document.getElementById('prog-fill').style.width = total ? (fin / total * 100) + '%' : '0%';
   document.getElementById('prog-count').textContent = fin + ' / ' + total;
-  const hasAny = features.some(f => hasPhotos(f.id));
-  document.getElementById('btn-html').disabled = !hasAny;
-  document.getElementById('btn-kmz').disabled  = !hasAny;
-}
-
-function downloadPhotos() {
-  const pList = photos[currentId] || [];
-  const f = features.find(x => x.id === currentId);
-  pList.forEach((ph, idx) => {
-    const a = document.createElement('a');
-    a.href = ph.dataUrl;
-    a.download = `Manzana_${f.num}_foto${idx+1}_${ph.name}`;
-    a.click();
-  });
+  const hasAny = Object.values(photos).some(pList => (pList || []).length > 0);
+  const btnHtml = document.getElementById('btn-html');
+  const btnKmz = document.getElementById('btn-kmz');
+  if (btnHtml) btnHtml.disabled = !hasAny;
+  if (btnKmz) btnKmz.disabled = !hasAny;
 }
 
 // ═══════════════════════════════════════════════════
-//  KMZ EXPORT
+//  EXPORTACIONES (KMZ y HTML)
 // ═══════════════════════════════════════════════════
-// Resize + convert to JPEG data URI (keeps KMZ compact, avoids Google Earth webp issues)
-function resizeImage(dataUrl, maxPx) {
-  maxPx = maxPx || 600;
-  return new Promise(function(resolve) {
-    var img = new Image();
-    img.onload = function() {
-      var scale = Math.min(1, maxPx / Math.max(img.width, img.height));
-      var w = Math.round(img.width  * scale);
-      var h = Math.round(img.height * scale);
-      var c = document.createElement('canvas');
-      c.width=w; c.height=h;
-      c.getContext('2d').drawImage(img,0,0,w,h);
-      resolve(c.toDataURL('image/jpeg', 0.78));
-    };
-    img.onerror = function() { resolve(dataUrl); };
-    img.src = dataUrl;
-  });
-}
-
 async function exportKMZ() {
   const btn = document.getElementById('btn-kmz');
-  btn.textContent='⏳ Generando...'; btn.disabled=true;
-  // Permitir que el DOM se actualice antes del proceso pesado
-  await new Promise(r => setTimeout(r, 50));
+  btn.textContent = '⏳ Generando...'; btn.disabled = true;
   try {
     const zip = new JSZip();
     let placemarks = '';
     for (const f of features) {
       const pList = photos[f.id] || [];
       if (!pList.length) continue;
-      const isF = !!finished[f.id];
-      let inner = '<b>Manzana ' + f.num + '</b><br>';
-      if (f.name !== String(f.num)) inner += 'Nombre: ' + f.name + '<br>';
-      if (isF) inner += '<i style="color:#7c5fe6">&#10003; Finalizada</i><br>';
-      inner += '<hr style="border:0;border-top:1px solid #ccc;margin:6px 0">';
-      for (let idx=0; idx<pList.length; idx++) {
-        const ph = pList[idx];
-        const resized = await resizeImage(ph.dataUrl, 600);
-        inner += '<div style="margin-bottom:10px">';
-        inner += '<div style="font-size:11px;color:#666;margin-bottom:4px">Foto ' + (idx+1) + ' · ' + ph.lat.toFixed(5) + ', ' + ph.lng.toFixed(5) + '</div>';
-        inner += '<img src="' + resized + '" width="300" style="max-width:100%;border-radius:4px">';
-        inner += '</div>';
-      }
-      const descHtml = '<![CDATA[' + inner + ']]>';
-      const coordStr = f.rings[0].map(([lat,lng]) => lng+','+lat+',0').join(' ');
-      const color = isF ? 'cc6e5f9f' : hasPhotos(f.id) ? 'cc38b8e0' : 'cc3a5ce0';
-      placemarks += '\n  <Placemark>'
-        + '\n    <n>Manzana ' + f.num + '</n>'
-        + '\n    <description>' + descHtml + '</description>'
-        + '\n    <Style>'
-        + '\n      <PolyStyle><color>' + color + '</color><fill>1</fill><outline>1</outline></PolyStyle>'
-        + '\n      <LineStyle><color>ffffffff</color><width>1.5</width></LineStyle>'
-        + '\n    </Style>'
-        + '\n    <Polygon>'
-        + '\n      <extrude>0</extrude><altitudeMode>clampToGround</altitudeMode>'
-        + '\n      <outerBoundaryIs><LinearRing><coordinates>' + coordStr + '</coordinates></LinearRing></outerBoundaryIs>'
-        + '\n    </Polygon>'
-        + '\n  </Placemark>';
+      placemarks += await createPlacemarkHtml(f.num, f.name, !!finished[f.id], f.rings[0], pList, finished[f.id] ? 'cc6e5f9f' : 'cc38b8e0');
     }
-    const kml = '<?xml version="1.0" encoding="UTF-8"?>'
-      + '\n<kml xmlns="http://www.opengis.net/kml/2.2">'
-      + '\n<Document>'
-      + '\n  <n>Registro Catastral</n>'
-      + '\n  <description>Manzanas con registro fotografico georreferenciado</description>'
-      + placemarks
-      + '\n</Document>\n</kml>';
+    if (photos['standalone'] && photos['standalone'].length) {
+      placemarks += await createPlacemarkHtml('Externas', 'Ofertas fuera de polígonos', false, null, photos['standalone'], 'cc38b8e0');
+    }
+    const kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>${placemarks}</Document></kml>`;
     zip.file('doc.kml', kml);
-    const content = await zip.generateAsync({type:'blob'});
-    const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href=url; a.download='registro_catastral.kmz'; a.click();
-    URL.revokeObjectURL(url);
-    btn.textContent='\u2b07 KMZ (pol\u00edgonos)'; btn.disabled=false;
-  } catch(e) {
-    alert('Error generando KMZ: ' + e.message);
-    btn.textContent='\u2b07 Exportar KMZ'; btn.disabled=false;
+    const blob = await zip.generateAsync({ type: 'blob' });
+    saveAs(blob, 'registro_catastral.kmz');
+    btn.textContent = '⬇ KMZ'; btn.disabled = false;
+  } catch (e) { alert('Error: ' + e.message); btn.textContent = '⬇ KMZ'; btn.disabled = false; }
+}
+
+async function createPlacemarkHtml(num, name, isF, ring, pList, color) {
+  let inner = `<b>${num === 'Externas' ? 'Ofertas Externas' : 'Manzana ' + num}</b><br>${name !== String(num) ? 'Nombre: ' + name + '<br>' : ''}${isF ? '<i>✓ Finalizada</i><br>' : ''}<hr>`;
+  for (let i = 0; i < pList.length; i++) {
+    const ph = pList[i];
+    const resized = await compressImage(ph.dataUrl);
+    inner += `<div style="margin-bottom:10px">`;
+    if (ph.isOffer) inner += `<b>💰 OFERTA</b><br>${ph.address ? '📍 ' + ph.address + '<br>' : ''}${ph.phone ? '📞 ' + ph.phone + '<br>' : ''}${ph.details ? '<div>' + ph.details + '</div>' : ''}`;
+    inner += `<div>Foto ${i + 1} · ${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</div><img src="${resized}" width="300" style="max-width:100%;border-radius:4px"></div>`;
   }
-}
-// ═══════════════════════════════════════════════════
-//  UTILITIES
-// ═══════════════════════════════════════════════════
-function readFileBuffer(file) {
-  return new Promise((res,rej)=>{
-    const r=new FileReader();
-    r.onload=e=>res(e.target.result);
-    r.onerror=rej;
-    r.readAsArrayBuffer(file);
-  });
+  const desc = '<![CDATA[' + inner + ']]>';
+  if (!ring) {
+    let pts = '';
+    pList.forEach((ph, i) => { pts += `<Placemark><name>Oferta ${i + 1}</name><Point><coordinates>${ph.lng},${ph.lat},0</coordinates></Point></Placemark>`; });
+    return pts;
+  }
+  const coordStr = ring.map(([lat, lng]) => `${lng},${lat},0`).join(' ');
+  return `<Placemark><name>${num === 'Externas' ? 'Ofertas' : 'Manzana ' + num}</name><description>${desc}</description><Style><PolyStyle><color>${color}</color><fill>1</fill></PolyStyle></Style><Polygon><outerBoundaryIs><LinearRing><coordinates>${coordStr}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`;
 }
 
-function showProc(msg) {
-  document.querySelector('.upload-grid').style.display='none';
-  document.querySelector('.shp-multi-note').style.display='none';
-  const ps=document.getElementById('proc-status');
-  ps.classList.add('show');
-  document.getElementById('proc-label').textContent=msg;
-  document.getElementById('proc-ok').textContent='';
-}
-function resetProc() {
-  document.querySelector('.upload-grid').style.display='grid';
-  document.querySelector('.shp-multi-note').style.display='block';
-  document.getElementById('proc-status').classList.remove('show');
-}
-function resetApp() {
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
-  overlay.innerHTML = `
-    <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:1.6rem 1.4rem;max-width:340px;width:100%;display:flex;flex-direction:column;gap:1rem;text-align:center">
-      <div style="font-size:2rem">↩</div>
-      <p style="font-weight:700">¿Volver al inicio?</p>
-      <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;line-height:1.7">Se perderán todos los datos no exportados.</p>
-      <div style="display:flex;gap:0.7rem;margin-top:0.3rem">
-        <button id="_rst_no" style="flex:1;padding:0.75rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">Cancelar</button>
-        <button id="_rst_si" style="flex:1;padding:0.75rem;border-radius:10px;border:none;cursor:pointer;background:#e05c3a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">Confirmar</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  document.getElementById('_rst_si').onclick = () => { borrarSesionGuardada(); location.reload(); };
-  document.getElementById('_rst_no').onclick = () => document.body.removeChild(overlay);
-}
-
-function openLightboxByIndex(idx) {
-  const pList = photos[currentId] || [];
-  const ph = pList[idx]; if (!ph) return;
-  document.getElementById('lb-img').src = ph.dataUrl;
-  const f = features.find(x => x.id === currentId);
-  document.getElementById('lb-caption').textContent =
-    'Manzana ' + f.num + ' — Foto ' + (idx+1) + ' · ' + ph.lat.toFixed(5) + ', ' + ph.lng.toFixed(5);
-  document.getElementById('lightbox').classList.add('show');
-}
-function closeLightbox() { document.getElementById('lightbox').classList.remove('show'); }
-document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeLightbox(); });
-
-// ═══════════════════════════════════════════════════
-//  EXPORT HTML REPORT  (fotos embebidas, 100% offline)
-// ═══════════════════════════════════════════════════
 async function exportHTML() {
   const btn = document.getElementById('btn-html');
   btn.textContent = '⏳ Generando...'; btn.disabled = true;
   try {
-    const fecha = new Date().toLocaleDateString('es-CO', {day:'2-digit',month:'long',year:'numeric'});
-    const totalFin   = features.filter(f => finished[f.id]).length;
-    const totalFotos = Object.values(photos).reduce((s, a) => s + (a||[]).length, 0);
-
-    const toThumb = (dataUrl) => new Promise(res => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, 500 / Math.max(img.width, img.height));
-        const c = document.createElement('canvas');
-        c.width = Math.round(img.width*scale); c.height = Math.round(img.height*scale);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        res(c.toDataURL('image/jpeg', 0.80));
-      };
-      img.onerror = () => res(dataUrl);
-      img.src = dataUrl;
-    });
-
+    const fecha = new Date().toLocaleDateString('es-CO');
+    const totalFin = features.filter(f => finished[f.id]).length;
+    let totalFotos = 0;
     let cardsHtml = '';
+
     for (const f of features) {
       const pList = photos[f.id] || [];
       if (!pList.length) continue;
-      const isF  = !!finished[f.id];
-      const total = pList.length;
-      const badge = isF
-        ? '<span style="background:#2d1f5e;color:#b09ef5;border:1px solid #7c5fe6;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">✓ FINALIZADA</span>'
-        : '<span style="background:#1e2a1a;color:#60c080;border:1px solid #3ab87a;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">' + total + ' FOTO' + (total>1?'S':'') + '</span>';
-
+      totalFotos += pList.length;
       let photosHtml = '';
       for (let idx = 0; idx < pList.length; idx++) {
         const ph = pList[idx];
-        const thumb = await toThumb(ph.dataUrl);
-        const coordLabel = ph.lat.toFixed(5) + ', ' + ph.lng.toFixed(5);
-        photosHtml += '<div style="break-inside:avoid;display:inline-block;width:calc(50% - 8px);margin:4px;vertical-align:top">'
-          + '<img src="' + thumb + '" data-full="' + thumb + '" data-label="Manzana ' + f.num + ' — Foto ' + (idx+1) + '"'
-          + ' onclick="openReportLightbox(this)"'
-          + ' style="width:100%;border-radius:6px;display:block;border:1px solid #2a2f44;cursor:zoom-in" alt="Foto">'
-          + '<div style="font-size:10px;color:#7a7f94;text-align:center;margin-top:4px;font-family:monospace;text-transform:uppercase;letter-spacing:0.08em">Foto ' + (idx+1) + ' · ' + coordLabel + '</div>'
-          + '</div>';
+        const thumb = await compressImage(ph.dataUrl);
+        let label = `Foto ${idx + 1} · ${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}`;
+        let extraInfo = '';
+        if (ph.isOffer) {
+          label = `💰 OFERTA ${idx + 1}`;
+          extraInfo = `<div style="font-size:10px;color:var(--partial);margin-bottom:4px;">${ph.address ? '📍 ' + ph.address + ' ' : ''}${ph.phone ? '📞 ' + ph.phone : ''}</div>`;
+          if (ph.details) extraInfo += `<div style="font-size:9px;color:#7a7f94;margin-bottom:8px;">${ph.details}</div>`;
+        }
+        photosHtml += `<div style="break-inside:avoid;display:inline-block;width:calc(50% - 8px);margin:4px;vertical-align:top">${extraInfo}<img src="${thumb}" onclick="openReportLightbox(this)" style="width:100%;border-radius:6px;border:1px solid #2a2f44;cursor:zoom-in"><div style="font-size:10px;color:#7a7f94;text-align:center;margin-top:4px;">${label}</div></div>`;
       }
-
-      const coordStr = f.centroid ? f.centroid[0].toFixed(5) + ', ' + f.centroid[1].toFixed(5) : '';
-      cardsHtml += '<div style="background:#181c27;border:1px solid #2a2f44;border-radius:10px;padding:16px;margin-bottom:16px;page-break-inside:avoid">'
-        + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid #2a2f44">'
-        + '<span style="font-size:18px;font-weight:800;letter-spacing:-0.02em">Manzana <span style="color:#e05c3a">' + f.num + '</span></span>'
-        + (f.name !== String(f.num) ? '<span style="font-size:11px;color:#7a7f94;font-family:monospace">' + f.name + '</span>' : '')
-        + badge
-        + (coordStr ? '<span style="margin-left:auto;font-size:10px;color:#7a7f94;font-family:monospace">' + coordStr + '</span>' : '')
-        + '</div>'
-        + '<div style="font-size:0">' + photosHtml + '</div>'
-        + '</div>';
+      cardsHtml += `<div style="background:#181c27;border:1px solid #2a2f44;border-radius:10px;padding:16px;margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;"><span style="font-size:18px;font-weight:800;">Manzana <span style="color:#e05c3a">${f.num}</span></span>${f.name !== String(f.num) ? `<span style="font-size:11px;color:#7a7f94;">${f.name}</span>` : ''}<span style="margin-left:auto;font-size:10px;color:#7a7f94;">${f.centroid[0].toFixed(5)}, ${f.centroid[1].toFixed(5)}</span></div><div>${photosHtml}</div></div>`;
     }
 
-    if (!cardsHtml) { alert('No hay manzanas con fotos para exportar.'); btn.textContent='⬇ Reporte HTML'; btn.disabled=false; return; }
+    let standaloneHtml = '';
+    if (photos['standalone'] && photos['standalone'].length) {
+      totalFotos += photos['standalone'].length;
+      for (let idx = 0; idx < photos['standalone'].length; idx++) {
+        const ph = photos['standalone'][idx];
+        const thumb = await compressImage(ph.dataUrl);
+        standaloneHtml += `<div style="break-inside:avoid;display:inline-block;width:calc(50% - 8px);margin:4px;"><div style="font-size:10px;color:var(--partial);">💰 OFERTA</div><div>${ph.address || 'Sin dirección'}</div><img src="${thumb}" onclick="openReportLightbox(this)" style="width:100%;border-radius:6px;"></div>`;
+      }
+      standaloneHtml = `<div style="background:#181c27;border:1px solid #2a2f44;border-radius:10px;padding:16px;margin-bottom:16px;"><h3 style="margin-bottom:12px;">💰 Ofertas Externas</h3><div>${standaloneHtml}</div></div>`;
+    }
 
-    // Map data
-    const featuresJson = JSON.stringify(features.map(f=>({
-      num: f.num, name: f.name, rings: f.rings,
-      hasPhotos: hasPhotos(f.id),
-      finished: !!finished[f.id]
-    })));
-
-    // Markers for report map: one per photo with exact coords
-    const markersJson = JSON.stringify(
-      features.flatMap(f =>
-        (photos[f.id]||[]).map((ph, idx) => ({
-          num: f.num, idx: idx+1,
-          lat: ph.lat, lng: ph.lng
-        }))
-      )
-    );
-
-    const cntFotos = features.filter(f => hasPhotos(f.id)).length;
-
-    const mapScript = [
-      '(function(){',
-      '  var map = L.map("report-map");',
-      '  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{',
-      '    attribution:"\u00a9 OpenStreetMap \u00a9 CARTO",maxZoom:19',
-      '  }).addTo(map);',
-      '  var features = ' + featuresJson + ';',
-      '  var markers  = ' + markersJson + ';',
-      '  var allLatLngs = [];',
-      '  features.forEach(function(f){',
-      '    f.rings.forEach(function(ring){',
-      '      var color = f.finished ? "#7c5fe6" : f.hasPhotos ? "#e0b83a" : "#e05c3a";',
-      '      L.polygon(ring,{color:color,weight:1.5,fillColor:color,fillOpacity:0.3})',
-      '       .bindTooltip("Manzana "+f.num,{direction:"top"}).addTo(map);',
-      '      allLatLngs = allLatLngs.concat(ring);',
-      '    });',
-      '  });',
-      '  var svg = \'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">\'',
-      '    + \'<circle cx="8" cy="8" r="6" fill="#ffffff" stroke="#0f1117" stroke-width="2.5"/>\'',
-      '    + \'<circle cx="8" cy="8" r="2.5" fill="#0f1117" opacity="0.7"/></svg>\';',
-      '  var icon = L.divIcon({html:svg,className:"",iconSize:[16,16],iconAnchor:[8,8]});',
-      '  markers.forEach(function(m){',
-      '    L.marker([m.lat,m.lng],{icon:icon})',
-      '     .bindTooltip("Manzana "+m.num+" \u2014 Foto "+m.idx,{direction:"top"}).addTo(map);',
-      '  });',
-      '  if(allLatLngs.length) map.fitBounds(L.latLngBounds(allLatLngs),{padding:[20,20]});',
-      '})();',
-      '',
-      'function openReportLightbox(img){',
-      '  var lb=document.getElementById("r-lightbox");',
-      '  document.getElementById("r-lb-img").src=img.dataset.full||img.src;',
-      '  document.getElementById("r-lb-cap").textContent=img.dataset.label||"";',
-      '  lb.style.display="flex"; document.body.style.overflow="hidden";',
-      '}',
-      'function closeReportLightbox(){',
-      '  document.getElementById("r-lightbox").style.display="none";',
-      '  document.body.style.overflow="";',
-      '}',
-      'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeReportLightbox();});'
-    ].join('\n');
-
-    const parts = [];
-    parts.push('<!DOCTYPE html>');
-    parts.push('<html lang="es"><head>');
-    parts.push('<meta charset="UTF-8">');
-    parts.push('<meta name="viewport" content="width=device-width,initial-scale=1">');
-    parts.push('<title>Reporte Catastral \u2014 ' + fecha + '</title>');
-    parts.push('<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">');
-    parts.push('<scr'+'ipt src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"><'+'/script>');
-    parts.push('<style>');
-    parts.push('*{box-sizing:border-box;margin:0;padding:0}');
-    parts.push('body{background:#0f1117;color:#e8e4dc;font-family:"Segoe UI",system-ui,sans-serif;padding:24px}');
-    parts.push('h1{font-size:clamp(1.4rem,3vw,2rem);font-weight:800;letter-spacing:-0.02em;margin-bottom:4px}');
-    parts.push('h1 span{color:#e05c3a}');
-    parts.push('.meta{font-family:monospace;font-size:11px;color:#7a7f94;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:20px}');
-    parts.push('.stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}');
-    parts.push('.stat{background:#181c27;border:1px solid #2a2f44;border-radius:8px;padding:10px 16px;text-align:center}');
-    parts.push('.stat-val{font-size:1.6rem;font-weight:800;color:#e05c3a;line-height:1}');
-    parts.push('.stat-lbl{font-family:monospace;font-size:10px;color:#7a7f94;text-transform:uppercase;letter-spacing:0.08em;margin-top:4px}');
-    parts.push('#report-map{width:100%;height:320px;border-radius:10px;border:1px solid #2a2f44;margin-bottom:24px}');
-    parts.push('.section-title{font-family:monospace;font-size:11px;color:#7a7f94;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid #2a2f44}');
-    parts.push('@media print{body{background:#fff;color:#111}.stat{background:#f5f5f5;border-color:#ddd}#report-map{display:none}}');
-    parts.push('#r-lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.95);z-index:9000;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:16px;}');
-    parts.push('#r-lb-img{max-width:92vw;max-height:84vh;border-radius:10px;border:1px solid #2a2f44;object-fit:contain;box-shadow:0 8px 40px rgba(0,0,0,0.8);}');
-    parts.push('#r-lb-cap{font-family:monospace;font-size:11px;color:#7a7f94;text-transform:uppercase;letter-spacing:0.1em;text-align:center;}');
-    parts.push('#r-lb-close{position:fixed;top:16px;right:16px;width:38px;height:38px;border-radius:50%;background:#1e2333;border:1px solid #2a2f44;color:#e8e4dc;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;}');
-    parts.push('#r-lb-close:hover{background:#2a2f44;}');
-    parts.push('</style></head><body>');
-    parts.push('<div id="r-lightbox" onclick="if(event.target===this)closeReportLightbox()">');
-    parts.push('<button id="r-lb-close" onclick="closeReportLightbox()">&#x2715;</button>');
-    parts.push('<img id="r-lb-img" src="" alt=""><p id="r-lb-cap"></p></div>');
-    parts.push('<h1>Registro <span>Catastral</span></h1>');
-    parts.push('<p class="meta">Generado el ' + fecha + ' &nbsp;&middot;&nbsp; ' + features.length + ' manzanas totales</p>');
-    parts.push('<div class="stats">');
-    parts.push('<div class="stat"><div class="stat-val">' + features.length + '</div><div class="stat-lbl">Manzanas totales</div></div>');
-    parts.push('<div class="stat"><div class="stat-val">' + totalFin + '</div><div class="stat-lbl">Finalizadas</div></div>');
-    parts.push('<div class="stat"><div class="stat-val">' + cntFotos + '</div><div class="stat-lbl">Con fotos</div></div>');
-    parts.push('<div class="stat"><div class="stat-val">' + totalFotos + '</div><div class="stat-lbl">Fotos totales</div></div>');
-    parts.push('</div>');
-    parts.push('<div id="report-map"></div>');
-    parts.push('<p class="section-title">Registro fotogr\u00e1fico por manzana</p>');
-    parts.push(cardsHtml);
-    parts.push('<scr'+'ipt>' + mapScript + '<'+'/script>');
-    parts.push('</body></html>');
-    const html = parts.join('\n');
-
-    const blob = new Blob([html], {type:'text/html;charset=utf-8'});
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href=url; a.download='reporte_catastral.html'; a.click();
-    URL.revokeObjectURL(url);
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte Catastral</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0f1117;color:#e8e4dc;font-family:system-ui;padding:24px}h1{font-size:1.8rem;margin-bottom:4px}h1 span{color:#e05c3a}.meta{font-size:11px;color:#7a7f94;margin-bottom:20px}.stats{display:flex;gap:12px;margin-bottom:24px}.stat{background:#181c27;border:1px solid #2a2f44;border-radius:8px;padding:10px 16px}.stat-val{font-size:1.6rem;font-weight:800;color:#e05c3a}.stat-lbl{font-size:10px;color:#7a7f94}#r-lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.95);z-index:9000;align-items:center;justify-content:center;flex-direction:column;gap:12px}#r-lightbox.show{display:flex}#r-lb-img{max-width:90vw;max-height:85vh;border-radius:8px}#r-lb-close{position:fixed;top:16px;right:16px;width:36px;height:36px;border-radius:50%;background:#1e2333;border:1px solid #2a2f44;cursor:pointer}</style></head><body><div id="r-lightbox" onclick="if(event.target===this)closeReportLightbox()"><button id="r-lb-close" onclick="closeReportLightbox()">✕</button><img id="r-lb-img" src=""><p id="r-lb-cap"></p></div><h1>Registro <span>Catastral</span></h1><p class="meta">${fecha} · ${features.length} manzanas totales</p><div class="stats"><div class="stat"><div class="stat-val">${features.length}</div><div class="stat-lbl">Manzanas</div></div><div class="stat"><div class="stat-val">${totalFin}</div><div class="stat-lbl">Finalizadas</div></div><div class="stat"><div class="stat-val">${totalFotos}</div><div class="stat-lbl">Fotos</div></div></div>${cardsHtml}${standaloneHtml}<script>function openReportLightbox(img){var lb=document.getElementById('r-lightbox');document.getElementById('r-lb-img').src=img.src;lb.classList.add('show');}function closeReportLightbox(){document.getElementById('r-lightbox').classList.remove('show');}<\/script></body></html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    saveAs(blob, 'reporte_catastral.html');
     btn.textContent = '⬇ Reporte HTML'; btn.disabled = false;
+  } catch (e) { alert('Error: ' + e.message); btn.textContent = '⬇ Reporte HTML'; btn.disabled = false; }
+}
 
-    // Ofrecer limpiar la sesión guardada — modal personalizado
-    setTimeout(() => {
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:1rem';
-      overlay.innerHTML = `
-        <div style="background:#181c27;border:1px solid #2a2f44;border-radius:16px;padding:1.6rem 1.4rem;max-width:360px;width:100%;display:flex;flex-direction:column;gap:1rem;text-align:center">
-          <div style="font-size:2rem">✅</div>
-          <p style="font-weight:700">Reporte generado</p>
-          <p style="font-family:'Courier New',monospace;font-size:0.6rem;color:#7a7f94;line-height:1.7">¿Deseas limpiar el progreso guardado para empezar una nueva sesión?</p>
-          <div style="display:flex;gap:0.7rem;margin-top:0.3rem">
-            <button id="_rp_no" style="flex:1;padding:0.75rem;border-radius:10px;border:1px solid #2a2f44;background:transparent;color:#7a7f94;cursor:pointer;font-family:'Courier New',monospace;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em">Mantener</button>
-            <button id="_rp_si" style="flex:1;padding:0.75rem;border-radius:10px;border:none;cursor:pointer;background:#3ab87a;color:white;font-family:'Courier New',monospace;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em">Limpiar</button>
-          </div>
-        </div>`;
-      document.body.appendChild(overlay);
-      document.getElementById('_rp_si').onclick = () => { document.body.removeChild(overlay); borrarSesionGuardada(); };
-      document.getElementById('_rp_no').onclick = () => document.body.removeChild(overlay);
-    }, 500);
-  } catch(e) {
-    alert('Error generando reporte: ' + e.message);
-    btn.textContent = '⬇ Reporte HTML'; btn.disabled = false;
+function resetApp() {
+  if (confirm('¿Volver al inicio? Se perderán los datos no exportados.')) {
+    borrarSesionGuardada();
+    location.reload();
   }
 }
+
+// ═══════════════════════════════════════════════════
+//  EVENTOS INICIALES
+// ═══════════════════════════════════════════════════
+document.getElementById('lic-btn').addEventListener('click', verificarLicencia);
+document.getElementById('lic-input').addEventListener('keydown', e => { if (e.key === 'Enter') verificarLicencia(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
