@@ -718,7 +718,9 @@ async function exportOfertasToExcel() {
 
     mostrarLoading('Construyendo Excel...');
 
-    const ROW_PT = 90; // altura de fila en puntos para que quepa la imagen
+    // Ajustar dimensiones según el dispositivo
+    const ROW_PT = isMobile ? 140 : 90; // Mucho más alto en móvil
+    const COL_WIDTH = isMobile ? 35 : 24; // Más ancho en móvil
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'CyberGIS';
@@ -746,7 +748,7 @@ async function exportOfertasToExcel() {
     });
 
     // Anchos de columna (unidades Excel: ~7px cada una)
-    ws.getColumn(1).width = 24;   // A  Foto
+    ws.getColumn(1).width = COL_WIDTH;   // A  Foto
     ws.getColumn(2).width = 12;   // B  Tipo
     ws.getColumn(3).width = 13;   // C  Fecha
     ws.getColumn(4).width = 10;   // D  Hora
@@ -827,10 +829,10 @@ async function exportOfertasToExcel() {
       if (b64img) {
         try {
           const imgId = wb.addImage({ base64: b64img, extension: 'jpeg' });
-          // Usar formato de objeto tl/br que es más estable en navegadores móviles
+          // Ajustar márgenes para que ocupen casi toda la celda
           ws.addImage(imgId, {
-            tl: { col: 0.1, row: rowN - 0.9 },
-            br: { col: 0.9, row: rowN - 0.1 },
+            tl: { col: 0.05, row: rowN - 0.95 },
+            br: { col: 0.95, row: rowN - 0.05 },
             editAs: 'oneCell'
           });
         } catch (e2) {
@@ -838,6 +840,7 @@ async function exportOfertasToExcel() {
         }
       }
     }
+
 
 
     // Autofilter desde fila 2
