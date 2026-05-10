@@ -706,11 +706,14 @@ async function exportOfertasToExcel() {
 
     mostrarLoading(`Procesando ${items.length} imágenes...`);
 
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const targetRes = isMobile ? 600 : 800; // Resolución menor en móvil para evitar límites de memoria
+
     // Pre-procesar todas las imágenes a JPEG limpio
     const imagenes = [];
     for (let i = 0; i < items.length; i++) {
       mostrarLoading(`Procesando imagen ${i + 1} de ${items.length}...`);
-      imagenes.push(await prepararImagen(items[i].dataUrl, 800));
+      imagenes.push(await prepararImagen(items[i].dataUrl, targetRes));
     }
 
     mostrarLoading('Construyendo Excel...');
@@ -743,7 +746,7 @@ async function exportOfertasToExcel() {
     });
 
     // Anchos de columna (unidades Excel: ~7px cada una)
-    ws.getColumn(1).width = 22;   // A  Foto
+    ws.getColumn(1).width = 24;   // A  Foto
     ws.getColumn(2).width = 12;   // B  Tipo
     ws.getColumn(3).width = 13;   // C  Fecha
     ws.getColumn(4).width = 10;   // D  Hora
@@ -819,19 +822,23 @@ async function exportOfertasToExcel() {
       ws.getCell(rowN, 10).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
       ws.getCell(rowN, 10).alignment = { vertical: 'middle', horizontal: 'center' };
 
-      // ── INSERTAR IMAGEN con range string (método confirmado) ──
+      // ── INSERTAR IMAGEN ──
       const b64img = imagenes[i];
       if (b64img) {
         try {
           const imgId = wb.addImage({ base64: b64img, extension: 'jpeg' });
-          // Range string 'A{row}:A{row}' — método documentado y probado que SÍ funciona
-          const colLetter = 'A';
-          ws.addImage(imgId, `${colLetter}${rowN}:${colLetter}${rowN}`);
+          // Usar formato de objeto tl/br que es más estable en navegadores móviles
+          ws.addImage(imgId, {
+            tl: { col: 0.1, row: rowN - 0.9 },
+            br: { col: 0.9, row: rowN - 0.1 },
+            editAs: 'oneCell'
+          });
         } catch (e2) {
           console.warn(`Imagen ${i + 1} no insertada:`, e2.message);
         }
       }
     }
+
 
     // Autofilter desde fila 2
     ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: items.length + 2, column: 11 } };
