@@ -66,6 +66,7 @@ async function verificarLicencia() {
     }));
     mostrarMsgLic(`✓ Bienvenido ${usuarioActual} — Válida hasta ${vence.toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' })}`, 'ok');
     $('user-name-display').textContent = usuarioActual;
+    notificarIngreso(data[0].codigo, usuarioActual);
     setTimeout(() => mostrarSeleccionModo(), 1500);
   } catch (e) {
     mostrarMsgLic('Error de conexión. Verifica tu internet.', 'error');
@@ -82,7 +83,21 @@ function mostrarSeleccionModo() {
   $('selection-screen').style.display = 'flex';
   iniciarTimerInactividad();
 }
-
+async function notificarIngreso(codigo, usuario) {
+  try {
+    await fetch("https://cknkscsglejyccwqkiys.supabase.co/functions/v1/rapid-endpoint", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + SUPA_KEY   // ← esto es lo que faltaba
+      },
+      body: JSON.stringify({
+        codigo: codigo,
+        usuario: usuario || "Usuario Web"
+      })
+    });
+  } catch (e) { }
+}
 function iniciarTimerInactividad() {
   const LIM = SESION_MINUTOS * 60 * 1000;
   function reset() {
@@ -807,7 +822,7 @@ async function exportOfertasToExcel() {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgCol } };
         cell.font = { name: 'Segoe UI', size: 9, color: { argb: C.text } };
         cell.alignment = { vertical: 'middle', horizontal: col === 1 ? 'center' : 'left', wrapText: true };
-        cell.border = { 
+        cell.border = {
           bottom: { style: 'thin', color: { argb: C.border } },
           right: { style: 'thin', color: { argb: C.border } }
         };
