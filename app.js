@@ -841,20 +841,16 @@ async function exportOfertasToExcel() {
       if (imgObj && imgObj.base64) {
         try {
           const imgId = wb.addImage({ base64: imgObj.base64, extension: 'jpeg' });
-          
-          // Calculamos el tamaño final en píxeles para que Excel NO la estire
-          const targetW = colPx * 0.92; // Usar el 92% del ancho de la columna
-          const targetH = targetW * (imgObj.h / imgObj.w);
-
           ws.addImage(imgId, {
-            tl: { col: 0.04, row: rowN - 0.96 },
-            ext: { width: targetW, height: targetH },
+            tl: { col: 0.01, row: rowN - 0.99 },
+            br: { col: 0.99, row: rowN - 0.01 },
             editAs: 'oneCell'
           });
         } catch (e2) {
           console.warn(`Imagen ${i + 1} no insertada:`, e2.message);
         }
       }
+
 
     }
 
