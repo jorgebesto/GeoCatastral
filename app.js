@@ -672,7 +672,7 @@ function recopilarItems() {
   return items;
 }
 
-// Redimensiona imagen → JPEG base64 limpio (confirmado funcional con ExcelJS 3.x)
+// Redimensiona imagen → JPEG base64 limpio + dimensiones reales
 function prepararImagen(dataUrl, maxPx) {
   return new Promise(resolve => {
     const img = new Image();
@@ -683,12 +683,17 @@ function prepararImagen(dataUrl, maxPx) {
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
       c.getContext('2d').drawImage(img, 0, 0, w, h);
-      resolve(c.toDataURL('image/jpeg', 0.80).split(',')[1]);
+      resolve({
+        base64: c.toDataURL('image/jpeg', 0.85).split(',')[1],
+        w: w,
+        h: h
+      });
     };
     img.onerror = () => resolve(null);
     img.src = dataUrl;
   });
 }
+
 
 async function exportOfertasToExcel() {
   const items = recopilarItems();
@@ -718,11 +723,13 @@ async function exportOfertasToExcel() {
 
     mostrarLoading('Construyendo Excel...');
 
-    // Ajustar dimensiones según el dispositivo
-    const ROW_PT = isMobile ? 140 : 90; // Mucho más alto en móvil
-    const COL_WIDTH = isMobile ? 35 : 24; // Más ancho en móvil
+    // Ancho fijo para la columna de fotos (en unidades de caracteres)
+    const COL_PHOTO_WIDTH = isMobile ? 32 : 24; 
+    // Convertir ancho de columna a píxeles aprox (1 unidad ~ 7.5px)
+    const colPx = COL_PHOTO_WIDTH * 7.5;
 
     const wb = new ExcelJS.Workbook();
+
     wb.creator = 'CyberGIS';
     wb.modified = new Date();
 
@@ -782,30 +789,38 @@ async function exportOfertasToExcel() {
     // ── Filas de datos + imágenes ─────────────────────
     for (let i = 0; i < items.length; i++) {
       const ph = items[i];
-      const rowN = i + 3;           // filas Excel (1-based): 1=título, 2=header, 3..N=datos
+      const imgObj = imagenes[i];
+      const rowN = i + 3;
       const isOff = !!ph.isOffer;
       const bgCol = isOff ? C.offerBg : (i % 2 === 0 ? C.rowOdd : C.rowEven);
       const fecha = new Date(ph.fecha);
 
-      // Agregar fila con datos (columna A vacía — ahí va la imagen)
       const row = ws.addRow([
-        '',                                          // A — imagen aquí
-        isOff ? 'OFERTA' : 'FOTO',                  // B
-        fecha.toLocaleDateString('es-CO'),           // C
-        fecha.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }), // D
-        ph.manzana || '—',                           // E
-        ph.address || '—',                          // F
-        ph.phone || '—',                          // G
-        ph.details || '—',                          // H
-        ph.lat.toFixed(6),                           // I
-        ph.lng.toFixed(6),                           // J
-        usuarioActual                                // K
+        '', 
+        isOff ? 'OFERTA' : 'FOTO',
+        fecha.toLocaleDateString('es-CO'),
+        fecha.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
+        ph.manzana || '—',
+        ph.address || '—',
+        ph.phone || '—',
+        ph.details || '—',
+        ph.lat.toFixed(6),
+        ph.lng.toFixed(6),
+        usuarioActual
       ]);
 
-      // Altura exacta para que quepa la imagen
-      row.height = ROW_PT;
+      // CALCULAR ALTURA DINÁMICA: 
+      // Queremos que la celda se ajuste a la proporción de la imagen.
+      // row.height está en puntos (1pt = 1.33px).
+      if (imgObj) {
+        const aspect = imgObj.h / imgObj.w;
+        const calculatedHeightPx = colPx * aspect;
+        // Limitar altura para evitar filas infinitas, pero dar suficiente espacio
+        row.height = Math.min(Math.max(calculatedHeightPx / 1.33, 60), 400);
+      } else {
+        row.height = 80;
+      }
 
-      // Estilos de todas las celdas
       row.eachCell((cell, colNum) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgCol } };
         cell.font = { name: 'Calibri', size: 9, color: { argb: C.text } };
@@ -813,26 +828,22 @@ async function exportOfertasToExcel() {
         cell.border = { bottom: { style: 'hair', color: { argb: C.border } } };
       });
 
-      // Tipo: color especial
       const cTipo = ws.getCell(rowN, 2);
       cTipo.font = { name: 'Calibri', size: 9, bold: true, color: { argb: isOff ? C.partial : C.accent } };
       cTipo.alignment = { vertical: 'middle', horizontal: 'center' };
 
-      // Lat/Lng: monospace
       ws.getCell(rowN, 9).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
       ws.getCell(rowN, 9).alignment = { vertical: 'middle', horizontal: 'center' };
       ws.getCell(rowN, 10).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
       ws.getCell(rowN, 10).alignment = { vertical: 'middle', horizontal: 'center' };
 
       // ── INSERTAR IMAGEN ──
-      const b64img = imagenes[i];
-      if (b64img) {
+      if (imgObj && imgObj.base64) {
         try {
-          const imgId = wb.addImage({ base64: b64img, extension: 'jpeg' });
-          // Ajustar márgenes para que ocupen casi toda la celda
+          const imgId = wb.addImage({ base64: imgObj.base64, extension: 'jpeg' });
           ws.addImage(imgId, {
-            tl: { col: 0.05, row: rowN - 0.95 },
-            br: { col: 0.95, row: rowN - 0.05 },
+            tl: { col: 0.02, row: rowN - 0.98 },
+            br: { col: 0.98, row: rowN - 0.02 },
             editAs: 'oneCell'
           });
         } catch (e2) {
@@ -840,6 +851,7 @@ async function exportOfertasToExcel() {
         }
       }
     }
+
 
 
 
