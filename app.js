@@ -724,7 +724,7 @@ async function exportOfertasToExcel() {
     mostrarLoading('Construyendo Excel...');
 
     // Ancho fijo para la columna de fotos (en unidades de caracteres)
-    const COL_PHOTO_WIDTH = isMobile ? 32 : 24; 
+    const COL_PHOTO_WIDTH = isMobile ? 32 : 24;
     // Convertir ancho de columna a píxeles aprox (1 unidad ~ 7.5px)
     const colPx = COL_PHOTO_WIDTH * 7.5;
 
@@ -755,7 +755,7 @@ async function exportOfertasToExcel() {
     });
 
     // Anchos de columna (unidades Excel: ~7px cada una)
-    ws.getColumn(1).width = COL_WIDTH;   // A  Foto
+    ws.getColumn(1).width = COL_PHOTO_WIDTH;   // A  Foto
     ws.getColumn(2).width = 12;   // B  Tipo
     ws.getColumn(3).width = 13;   // C  Fecha
     ws.getColumn(4).width = 10;   // D  Hora
@@ -796,7 +796,7 @@ async function exportOfertasToExcel() {
       const fecha = new Date(ph.fecha);
 
       const row = ws.addRow([
-        '', 
+        '',
         isOff ? 'OFERTA' : 'FOTO',
         fecha.toLocaleDateString('es-CO'),
         fecha.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
@@ -1003,7 +1003,7 @@ async function exportHTML() {
   mostrarLoading('Generando reporte interactivo...');
   try {
     const fechaStr = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    
+
     // Preparar datos para el mapa en el HTML
     const mapData = items.map(ph => ({
       lat: ph.lat,
@@ -1279,20 +1279,4 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeLightbox(); closeDropdown(); cancelPinMode(); }
   });
-
-  // Sesión guardada
-  const ses = localStorage.getItem('catastral_licencia');
-  if (ses) {
-    try {
-      const s = JSON.parse(ses);
-      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
-      const vence = new Date(s.vence + 'T00:00:00');
-      if (hoy <= vence) {
-        usuarioActual = s.nombre;
-        $('user-name-display').textContent = usuarioActual;
-        mostrarSeleccionModo();
-        $('license-screen').classList.add('hide');
-      }
-    } catch (e) { }
-  }
 });
