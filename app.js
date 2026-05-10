@@ -635,13 +635,10 @@ function updateMemoryUI() {
   const mb = calcMemoryMB(), pct = Math.min(mb / MEM_LIMIT_MB, 1), fill = $('mem-fill');
   if (!fill) return;
   $('stat-mem').style.display = 'flex'; fill.style.width = (pct * 100).toFixed(1) + '%';
-  const label = mb.toFixed(1) + ' MB';
-  $('mem-count').textContent = label;
-  if ($('menu-mem-val')) $('menu-mem-val').textContent = 'Memoria: ' + label;
+  $('mem-count').textContent = mb.toFixed(1) + ' MB';
   fill.className = 'stat-bar-fill';
   if (pct >= MEM_BLOCK_PCT) fill.classList.add('danger'); else if (pct >= MEM_WARN_PCT) fill.classList.add('warn');
 }
-
 
 function updateProgress() {
   const total = features.length;
@@ -649,16 +646,13 @@ function updateProgress() {
     const fin = features.filter(f => finished[f.id]).length;
     $('stat-prog').style.display = 'flex';
     $('prog-fill').style.width = ((fin / total) * 100).toFixed(1) + '%';
-    const label = fin + '/' + total;
-    $('prog-count').textContent = label;
-    if ($('menu-prog-val')) $('menu-prog-val').textContent = 'Avance: ' + label;
+    $('prog-count').textContent = fin + '/' + total;
   }
   const hasAny = Object.values(photos).some(pl => (pl || []).length > 0);
   const miKmz = $('mi-kmz'), miHtml = $('mi-html');
   if (miKmz) miKmz.disabled = !hasAny;
   if (miHtml) miHtml.disabled = !hasAny;
 }
-
 
 // ════════════════════════════════════════════════════
 //  HELPER: recopilar todos los items
@@ -672,7 +666,9 @@ function recopilarItems() {
   return items;
 }
 
-// Redimensiona imagen → JPEG base64 limpio + dimensiones reales
+// ════════════════════════════════════════════════════
+//  PREPARAR IMAGEN — devuelve base64 JPEG + dimensiones reales
+// ════════════════════════════════════════════════════
 function prepararImagen(dataUrl, maxPx) {
   return new Promise(resolve => {
     const img = new Image();
@@ -683,91 +679,78 @@ function prepararImagen(dataUrl, maxPx) {
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
       c.getContext('2d').drawImage(img, 0, 0, w, h);
-      resolve({
-        base64: c.toDataURL('image/jpeg', 0.85).split(',')[1],
-        w: w,
-        h: h
-      });
+      // Devolver base64 Y dimensiones reales para calcular alto de fila
+      resolve({ b64: c.toDataURL('image/jpeg', 0.82).split(',')[1], w, h });
     };
     img.onerror = () => resolve(null);
     img.src = dataUrl;
   });
 }
 
-
+// ════════════════════════════════════════════════════
+//  EXPORTAR EXCEL CON IMÁGENES
+//  ExcelJS 3.10.0 + ext con píxeles directos (probado y confirmado)
+// ════════════════════════════════════════════════════
 async function exportOfertasToExcel() {
   const items = recopilarItems();
   if (!items.length) { alert('No hay datos para exportar'); return; }
 
   mostrarLoading('Cargando librería Excel...');
-
   try {
-    // CRÍTICO: usar ExcelJS 3.10.0 — la 4.x tiene bugs confirmados con imágenes en browser
     if (!window.ExcelJS) {
       await cargarScript('https://cdn.jsdelivr.net/npm/exceljs@3.10.0/dist/exceljs.min.js');
       await new Promise(r => setTimeout(r, 400));
     }
     if (!window.ExcelJS) throw new Error('No se pudo cargar ExcelJS');
 
-    mostrarLoading(`Procesando ${items.length} imágenes...`);
-
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    const targetRes = isMobile ? 600 : 800; // Resolución menor en móvil para evitar límites de memoria
-
-    // Pre-procesar todas las imágenes a JPEG limpio
+    // ── Pre-procesar imágenes — capturar b64 + dimensiones reales ──
     const imagenes = [];
     for (let i = 0; i < items.length; i++) {
       mostrarLoading(`Procesando imagen ${i + 1} de ${items.length}...`);
-      imagenes.push(await prepararImagen(items[i].dataUrl, targetRes));
+      imagenes.push(await prepararImagen(items[i].dataUrl, 800));
     }
 
     mostrarLoading('Construyendo Excel...');
 
-    // Ancho fijo para la columna de fotos (en unidades de caracteres)
-    const COL_PHOTO_WIDTH = isMobile ? 32 : 24;
-    // Convertir ancho de columna a píxeles aprox (1 unidad ~ 7.5px)
-    const colPx = COL_PHOTO_WIDTH * 7.5;
+    // Ancho fijo columna A en píxeles (1 unidad Excel ≈ 7.5px)
+    // Columna A = 22 unidades → 22 * 7.5 = 165px
+    const COL_A_PX = 165;
 
     const wb = new ExcelJS.Workbook();
+    wb.creator = 'CyberGIS'; wb.modified = new Date();
 
-    wb.creator = 'CyberGIS';
-    wb.modified = new Date();
-
-    // ── COLORES ───────────────────────────────────────
     const C = {
-      accent: 'FFE05C3A',
-      accentFg: 'FFFFFFFF',
-      hdrBg: 'FF1E2435',
-      hdrFg: 'FFECEAF3',
-      rowOdd: 'FF191D26',
-      rowEven: 'FF1F2535',
-      offerBg: 'FF1E1A0A',
-      text: 'FFECEAF3',
-      muted: 'FF8890A8',
-      border: 'FF2A2F44',
-      partial: 'FFE0B83A',
-      done: 'FF3AB87A',
+      accent: 'FF002D5B',   // Azul Navy Profundo
+      accentFg: 'FFFFFFFF', // Blanco
+      hdrBg: 'FF002147',    // Azul Oxford (Headers)
+      hdrFg: 'FFFFFFFF',    // Blanco (Texto Header)
+      rowOdd: 'FFFFFFFF',   // Blanco (Fila impar)
+      rowEven: 'FFF5F8FB',  // Azul Glacial Sutil (Fila par)
+      offerBg: 'FFFFF9E6',  // Crema/Dorado muy tenue (Ofertas)
+      text: 'FF1A1C21',     // Negro Carbón (Texto)
+      muted: 'FF606770',    // Gris (Metadatos)
+      border: 'FFD1D5DB',   // Gris Plata (Bordes)
+      partial: 'FF856404',  // Dorado (Pendientes)
+      done: 'FF155724',     // Verde (Completados)
     };
 
-    // ── HOJA 1: REGISTROS ─────────────────────────────
+
     const ws = wb.addWorksheet('Registros', {
       views: [{ state: 'frozen', ySplit: 2, xSplit: 0 }]
     });
 
-    // Anchos de columna (unidades Excel: ~7px cada una)
-    ws.getColumn(1).width = COL_PHOTO_WIDTH;   // A  Foto
-    ws.getColumn(2).width = 12;   // B  Tipo
-    ws.getColumn(3).width = 13;   // C  Fecha
-    ws.getColumn(4).width = 10;   // D  Hora
-    ws.getColumn(5).width = 22;   // E  Manzana
-    ws.getColumn(6).width = 32;   // F  Dirección
-    ws.getColumn(7).width = 18;   // G  Teléfono
-    ws.getColumn(8).width = 38;   // H  Detalles
-    ws.getColumn(9).width = 14;   // I  Lat
-    ws.getColumn(10).width = 14;   // J  Lng
-    ws.getColumn(11).width = 18;   // K  Usuario
+    ws.getColumn(1).width = 22;
+    ws.getColumn(2).width = 12;
+    ws.getColumn(3).width = 13;
+    ws.getColumn(4).width = 10;
+    ws.getColumn(5).width = 22;
+    ws.getColumn(6).width = 32;
+    ws.getColumn(7).width = 18;
+    ws.getColumn(8).width = 38;
+    ws.getColumn(9).width = 14;
+    ws.getColumn(10).width = 14;
+    ws.getColumn(11).width = 18;
 
-    // ── Fila 1: título ────────────────────────────────
     ws.mergeCells('A1:K1');
     const r1 = ws.getRow(1); r1.height = 36;
     const c1 = ws.getCell('A1');
@@ -776,9 +759,8 @@ async function exportOfertasToExcel() {
     c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.accent } };
     c1.alignment = { vertical: 'middle', horizontal: 'center' };
 
-    // ── Fila 2: encabezados ───────────────────────────
-    const HDRS = ['Foto', 'Tipo', 'Fecha', 'Hora', 'Manzana / Zona', 'Dirección', 'Teléfono', 'Detalles / Precio', 'Latitud', 'Longitud', 'Usuario'];
-    const r2 = ws.addRow(HDRS); r2.height = 24;
+    const r2 = ws.addRow(['Foto', 'Tipo', 'Fecha', 'Hora', 'Manzana / Zona', 'Dirección', 'Teléfono', 'Detalles / Precio', 'Latitud', 'Longitud', 'Usuario']);
+    r2.height = 24;
     r2.eachCell(cell => {
       cell.font = { name: 'Calibri', bold: true, size: 10, color: { argb: C.hdrFg } };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.hdrBg } };
@@ -786,103 +768,97 @@ async function exportOfertasToExcel() {
       cell.border = { bottom: { style: 'medium', color: { argb: C.accent } } };
     });
 
-    // ── Filas de datos + imágenes ─────────────────────
     for (let i = 0; i < items.length; i++) {
       const ph = items[i];
-      const imgObj = imagenes[i];
+      const img = imagenes[i];        // { b64, w, h } o null
       const rowN = i + 3;
       const isOff = !!ph.isOffer;
       const bgCol = isOff ? C.offerBg : (i % 2 === 0 ? C.rowOdd : C.rowEven);
       const fecha = new Date(ph.fecha);
 
-      const row = ws.addRow([
-        '',
-        isOff ? 'OFERTA' : 'FOTO',
-        fecha.toLocaleDateString('es-CO'),
-        fecha.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
-        ph.manzana || '—',
-        ph.address || '—',
-        ph.phone || '—',
-        ph.details || '—',
-        ph.lat.toFixed(6),
-        ph.lng.toFixed(6),
-        usuarioActual
-      ]);
+      // ── Calcular altura de fila según proporción REAL de la imagen ──
+      // Queremos que la imagen ocupe exactamente el ancho de la columna A
+      // y que la fila tenga exactamente la altura proporcional.
+      // ExcelJS row.height está en puntos (1pt ≈ 1.33px en pantalla, pero Excel usa 0.75pt/px en impresión)
+      // Usamos la conversión estándar de Excel: height_pts = height_px / 0.75
+      let rowHeightPt = 90; // fallback si no hay imagen
+      let imgDispW = COL_A_PX;
+      let imgDispH = Math.round(COL_A_PX * 0.75); // fallback 4:3
 
-      // CALCULAR ALTURA DINÁMICA: 
-      // Queremos que la celda se ajuste a la proporción de la imagen.
-      // row.height está en puntos (1pt = 1.33px).
-      if (imgObj) {
-        const aspect = imgObj.h / imgObj.w;
-        const calculatedHeightPx = colPx * aspect;
-        // Limitar altura para evitar filas infinitas, pero dar suficiente espacio
-        row.height = Math.min(Math.max(calculatedHeightPx / 1.33, 60), 400);
-      } else {
-        row.height = 80;
+      if (img) {
+        const aspect = img.h / img.w;          // ej: vertical 4:3 → 1.33, horizontal 3:4 → 0.75
+        imgDispH = Math.round(COL_A_PX * aspect);  // alto proporcional en px
+        rowHeightPt = imgDispH / 0.75;         // convertir px a puntos Excel
+        // Limitar entre 60pt y 400pt para no romper la vista
+        rowHeightPt = Math.min(Math.max(rowHeightPt, 60), 400);
+        imgDispH = Math.round(rowHeightPt * 0.75); // recalcular px desde pts limitado
       }
 
-      row.eachCell((cell, colNum) => {
+      const row = ws.addRow([
+        '', isOff ? 'OFERTA' : 'FOTO',
+        fecha.toLocaleDateString('es-CO'),
+        fecha.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
+        ph.manzana || '—', ph.address || '—', ph.phone || '—', ph.details || '—',
+        ph.lat.toFixed(6), ph.lng.toFixed(6), usuarioActual
+      ]);
+      row.height = rowHeightPt;
+
+      row.eachCell((cell, col) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgCol } };
-        cell.font = { name: 'Calibri', size: 9, color: { argb: C.text } };
-        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'center' : 'left', wrapText: true };
-        cell.border = { bottom: { style: 'hair', color: { argb: C.border } } };
+        cell.font = { name: 'Segoe UI', size: 9, color: { argb: C.text } };
+        cell.alignment = { vertical: 'middle', horizontal: col === 1 ? 'center' : 'left', wrapText: true };
+        cell.border = { 
+          bottom: { style: 'thin', color: { argb: C.border } },
+          right: { style: 'thin', color: { argb: C.border } }
+        };
       });
+
 
       const cTipo = ws.getCell(rowN, 2);
       cTipo.font = { name: 'Calibri', size: 9, bold: true, color: { argb: isOff ? C.partial : C.accent } };
       cTipo.alignment = { vertical: 'middle', horizontal: 'center' };
-
       ws.getCell(rowN, 9).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
       ws.getCell(rowN, 9).alignment = { vertical: 'middle', horizontal: 'center' };
       ws.getCell(rowN, 10).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
       ws.getCell(rowN, 10).alignment = { vertical: 'middle', horizontal: 'center' };
 
-      // ── INSERTAR IMAGEN ──
-      if (imgObj && imgObj.base64) {
+      // ── INSERTAR IMAGEN con ext en píxeles directos ──
+      // ExcelJS 3.x multiplica internamente por 9525 (EMU/px)
+      // Así que pasamos los píxeles directamente SIN multiplicar.
+      // Confirmado: cx_EMU = w_px * 9525, ExcelJS lo hace por nosotros.
+      if (img && img.b64) {
         try {
-          const imgId = wb.addImage({ base64: imgObj.base64, extension: 'jpeg' });
+          const imgId = wb.addImage({ base64: img.b64, extension: 'jpeg' });
           ws.addImage(imgId, {
-            tl: { col: 0.01, row: rowN - 0.99 },
-            br: { col: 0.99, row: rowN - 0.01 },
-            editAs: 'oneCell'
+            tl: { col: 0, row: rowN - 1 },         // esquina top-left: columna A, fila actual (0-based)
+            ext: { width: imgDispW, height: imgDispH } // dimensiones exactas en px
           });
         } catch (e2) {
           console.warn(`Imagen ${i + 1} no insertada:`, e2.message);
         }
       }
-
-
     }
 
-
-
-
-    // Autofilter desde fila 2
     ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: items.length + 2, column: 11 } };
 
     // ── HOJA 2: RESUMEN ───────────────────────────────
     const ws2 = wb.addWorksheet('Resumen');
-    ws2.getColumn(1).width = 30;
-    ws2.getColumn(2).width = 24;
-
+    ws2.getColumn(1).width = 30; ws2.getColumn(2).width = 24;
     ws2.mergeCells('A1:B1');
     const rS1 = ws2.getRow(1); rS1.height = 32;
     ws2.getCell('A1').value = 'RESUMEN DEL LEVANTAMIENTO';
     ws2.getCell('A1').font = { name: 'Calibri', bold: true, size: 13, color: { argb: C.accentFg } };
     ws2.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.accent } };
     ws2.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
-
     const rS2 = ws2.addRow(['Indicador', 'Valor']); rS2.height = 22;
     rS2.eachCell(c => {
       c.font = { name: 'Calibri', bold: true, size: 10, color: { argb: C.hdrFg } };
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.hdrBg } };
       c.alignment = { vertical: 'middle' };
     });
-
     const totalF = items.filter(x => !x.isOffer).length;
     const totalO = items.filter(x => x.isOffer).length;
     const finCnt = features.filter(f => finished[f.id]).length;
-
     [
       ['Usuario', usuarioActual],
       ['Fecha exportación', new Date().toLocaleString('es-CO')],
@@ -897,31 +873,25 @@ async function exportOfertasToExcel() {
       r.getCell(1).font = { name: 'Calibri', bold: true, size: 9, color: { argb: C.muted } };
       r.getCell(2).font = { name: 'Calibri', bold: false, size: 9, color: { argb: C.text } };
       const bg = idx % 2 === 0 ? C.rowOdd : C.rowEven;
-      r.eachCell(c => {
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
-        c.alignment = { vertical: 'middle' };
-      });
+      r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }; c.alignment = { vertical: 'middle' }; });
     });
 
-    // ── GENERAR Y DESCARGAR ───────────────────────────
     mostrarLoading('Guardando archivo...');
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const fname = `CyberGIS_${isMercadoMode ? 'Mercado' : 'Catastral'}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = fname;
+    const a = document.createElement('a'); a.href = url; a.download = fname;
     document.body.appendChild(a); a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
-
     cerrarLoading();
     const imgOk = imagenes.filter(x => x !== null).length;
-    alert(`✅ Excel descargado correctamente\n📊 ${items.length} registros\n🖼️ ${imgOk} imágenes incrustadas\n📋 Hoja de resumen incluida`);
+    alert(`✅ Excel descargado\n📊 ${items.length} registros · 🖼️ ${imgOk} imágenes incrustadas`);
 
   } catch (err) {
     cerrarLoading();
     console.error('Error Excel:', err);
-    alert('Error al generar Excel: ' + err.message + '\n\nRevisa la consola para más detalles.');
+    alert('Error al generar Excel: ' + err.message);
   }
 }
 
@@ -996,8 +966,11 @@ async function exportKMZ() {
   } catch (e) { cerrarLoading(); alert('Error KMZ: ' + e.message); console.error(e); }
 }
 
+
+
+
 // ════════════════════════════════════════════════════
-//  EXPORTAR REPORTE HTML
+//  EXPORTAR REPORTE HTML — mapa Leaflet interactivo
 // ════════════════════════════════════════════════════
 async function exportHTML() {
   const items = recopilarItems();
@@ -1005,182 +978,182 @@ async function exportHTML() {
   mostrarLoading('Generando reporte interactivo...');
   try {
     const fechaStr = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const totalO = items.filter(x => x.isOffer).length;
+    const totalF = items.filter(x => !x.isOffer).length;
+    const finCnt = features.filter(f => finished[f.id]).length;
 
-    // Preparar datos para el mapa en el HTML
-    const mapData = items.map(ph => ({
-      lat: ph.lat,
-      lng: ph.lng,
-      isOffer: !!ph.isOffer,
+    const mapData = JSON.stringify(items.map(ph => ({
+      lat: ph.lat, lng: ph.lng, isOffer: !!ph.isOffer,
       title: ph.manzana || 'Registro',
-      address: ph.address || '',
-      phone: ph.phone || '',
+      address: ph.address || '', phone: ph.phone || '',
       details: ph.details || '',
       fecha: new Date(ph.fecha).toLocaleString('es-CO'),
       img: ph.dataUrl
-    }));
+    })));
+
+    const polData = JSON.stringify(features.map(f => ({
+      num: f.num, rings: f.rings,
+      estado: finished[f.id] ? 'fin' : (photos[f.id]?.length ? 'partial' : 'empty'),
+      fotos: (photos[f.id] || []).length
+    })));
 
     const cards = items.map((ph, i) => `
-    <div class="card ${ph.isOffer ? 'offer' : 'photo'}" id="card-${i}">
-      <div class="card-img">
-        <img src="${ph.dataUrl}" alt="Foto ${i + 1}" loading="lazy" onclick="openFull(this.src)" style="cursor:zoom-in">
+    <div class="card ${ph.isOffer ? 'offer' : 'photo'}" id="card-${i}" onclick="flyTo(${i})">
+      <div class="cimg">
+        <img src="${ph.dataUrl}" loading="lazy" alt="">
         <span class="badge">${ph.isOffer ? '💰 Oferta' : '📸 Foto'}</span>
       </div>
-      <div class="card-body">
-        <div class="card-title">${ph.manzana}</div>
-        ${ph.address ? `<div class="row"><span class="ic">📍</span><span>${ph.address}</span></div>` : ''}
-        ${ph.phone ? `<div class="row"><span class="ic">📞</span><span>${ph.phone}</span></div>` : ''}
-        ${ph.details ? `<div class="row"><span class="ic">📋</span><span>${ph.details}</span></div>` : ''}
-        <div class="row dim"><span class="ic">🕐</span><span>${new Date(ph.fecha).toLocaleString('es-CO')}</span></div>
-        <div class="row dim"><span class="ic">📌</span><span>${ph.lat.toFixed(6)}, ${ph.lng.toFixed(6)}</span></div>
-        <button class="btn-goto" onclick="gotoMarker(${i})">Ver en mapa</button>
+      <div class="cbody">
+        <div class="ctitle">${ph.manzana || 'Sin zona'}</div>
+        ${ph.address ? `<div class="rw"><span>📍</span><span>${ph.address}</span></div>` : ''}
+        ${ph.phone ? `<div class="rw"><span>📞</span><span>${ph.phone}</span></div>` : ''}
+        ${ph.details ? `<div class="rw"><span>📋</span><span>${ph.details}</span></div>` : ''}
+        <div class="rw dim"><span>📌</span><span>${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</span></div>
       </div>
-    </div>`).join('\n');
+    </div>`).join('');
 
     const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>CyberGIS — Reporte Interactivo</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
-  :root{--bg:#0f1115;--s:#161a22;--s2:#1c222d;--ac:#E05C3A;--part:#e0b83a;--txt:#eceaf3;--mut:#8890a8;--brd:rgba(255,255,255,.06)}
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--txt);font-family:'DM Sans',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
-  
-  .hdr{background:var(--s);border-bottom:1px solid var(--brd);padding:0.8rem 1.5rem;display:flex;align-items:center;justify-content:space-between;z-index:100}
-  .brand{display:flex;align-items:center;gap:0.8rem}
-  .logo{font-size:1.5rem;background:rgba(224,92,58,0.1);padding:0.4rem;border-radius:10px;border:1px solid rgba(224,92,58,0.2)}
-  .title{font-size:1.1rem;font-weight:700}
-  .title em{color:var(--ac);font-style:normal}
-  .meta{font-size:0.7rem;color:var(--mut)}
-
-  .main-layout{display:flex;flex:1;overflow:hidden}
-  #map-export{flex:1;background:#0a0c10}
-  .sidebar{width:380px;background:var(--s);border-left:1px solid var(--brd);overflow-y:auto;padding:1.2rem;display:flex;flex-direction:column;gap:1rem}
-  
-  .stats{display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.5rem}
-  .stat{background:var(--s2);padding:0.7rem;border-radius:10px;text-align:center;border:1px solid var(--brd)}
-  .sn{font-size:1.2rem;font-weight:700}.sl{font-size:0.6rem;color:var(--mut);text-transform:uppercase;letter-spacing:1px}
-
-  .grid{display:flex;flex-direction:column;gap:1rem}
-  .card{background:var(--s2);border:1px solid var(--brd);border-radius:12px;overflow:hidden;transition:all 0.2s}
-  .card:hover{border-color:rgba(255,255,255,0.15)}
-  .card.active{border-color:var(--ac);box-shadow:0 0 15px rgba(224,92,58,0.2)}
-  .card-img{position:relative;aspect-ratio:16/9;overflow:hidden}
-  .card-img img{width:100%;height:100%;object-fit:cover}
-  .badge{position:absolute;top:8px;left:8px;padding:3px 8px;border-radius:12px;font-size:0.6rem;font-weight:700;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px)}
-  .card.offer .badge{color:var(--part)}.card.photo .badge{color:var(--ac)}
-  .card-body{padding:0.8rem}
-  .card-title{font-size:0.85rem;font-weight:700;margin-bottom:0.4rem}
-  .row{font-size:0.72rem;color:var(--mut);margin-bottom:0.2rem;display:flex;align-items:flex-start;gap:0.4rem}
-  .dim{opacity:0.6;font-size:0.65rem}.ic{flex-shrink:0}
-  .btn-goto{width:100%;margin-top:0.6rem;background:var(--s);border:1px solid var(--brd);color:var(--txt);padding:0.4rem;border-radius:6px;font-size:0.7rem;cursor:pointer;transition:0.2s}
-  .btn-goto:hover{background:var(--ac);border-color:var(--ac)}
-
-  /* Custom Popup */
-  .leaflet-popup-content-wrapper{background:var(--s2);color:var(--txt);border:1px solid var(--brd);border-radius:12px}
-  .leaflet-popup-tip{background:var(--s2)}
-  .pop-title{font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:5px}
-  .pop-img{width:100%;border-radius:8px;margin-top:8px;aspect-ratio:4/3;object-fit:cover;cursor:zoom-in}
-
-  /* Fullscreen Viewer */
-  #viewer{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.95);align-items:center;justify-content:center;cursor:zoom-out}
-  #viewer.active{display:flex}
-  #viewer img{max-width:95vw;max-height:95vh;border-radius:8px;box-shadow:0 0 50px rgba(0,0,0,0.8)}
-
-  @media(max-width:900px){
-    .main-layout{flex-direction:column}
-    .sidebar{width:100%;height:40%;border-left:none;border-top:1px solid var(--brd)}
-    .hdr{padding:0.6rem 1rem}.logo{padding:0.2rem}
-  }
+:root{--bg:#0f1115;--s:#161a22;--s2:#1c222d;--ac:#E05C3A;--part:#e0b83a;--done:#3ab87a;--fin:#7c5fe6;--txt:#eceaf3;--mut:#8890a8;--brd:rgba(255,255,255,.06)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--txt);font-family:'DM Sans',sans-serif;overflow:hidden}
+.app{display:flex;flex-direction:column;height:100%}
+.hdr{flex-shrink:0;background:var(--s);border-bottom:1px solid var(--brd);padding:.75rem 1.2rem;display:flex;align-items:center;gap:.75rem}
+.logo{font-size:1.3rem;background:rgba(224,92,58,.1);padding:.35rem .5rem;border-radius:9px;border:1px solid rgba(224,92,58,.2)}
+.ttl{font-size:.95rem;font-weight:700}.ttl em{color:var(--ac);font-style:normal}
+.meta{font-size:.65rem;color:var(--mut);margin-top:.1rem}
+.mbadge{margin-left:auto;padding:.15rem .6rem;border-radius:20px;background:rgba(224,92,58,.12);color:var(--ac);font-size:.55rem;font-weight:700;font-family:monospace;letter-spacing:.06em;white-space:nowrap}
+.stats{flex-shrink:0;display:flex;gap:.5rem;padding:.6rem 1.2rem;background:var(--s);border-bottom:1px solid var(--brd)}
+.stat{background:var(--s2);border:1px solid var(--brd);border-radius:9px;padding:.45rem .8rem;text-align:center;min-width:60px}
+.sn{font-size:1.2rem;font-weight:700}.sl{font-size:.5rem;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.main{flex:1;display:flex;min-height:0;overflow:hidden}
+.map-col{flex:1;min-width:0}
+#map{width:100%;height:100%}
+.sidebar{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--s);border-left:1px solid var(--brd);overflow:hidden}
+.sb-hdr{flex-shrink:0;padding:.6rem 1rem;border-bottom:1px solid var(--brd);font-size:.68rem;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.08em}
+.sb-list{flex:1;overflow-y:auto;padding:.5rem}
+.sb-list::-webkit-scrollbar{width:3px}.sb-list::-webkit-scrollbar-thumb{background:var(--brd)}
+.card{background:var(--s2);border:1px solid var(--brd);border-radius:11px;overflow:hidden;margin-bottom:.5rem;cursor:pointer;transition:border-color .2s,transform .15s;border-left:3px solid transparent}
+.card:hover{border-color:rgba(255,255,255,.15);transform:translateX(2px)}
+.card.active{border-color:white!important;background:#1a2030}
+.card.offer{border-left-color:var(--part)}.card.photo{border-left-color:var(--ac)}
+.cimg{position:relative;aspect-ratio:16/9;overflow:hidden;background:#0a0c10}
+.cimg img{width:100%;height:100%;object-fit:cover}
+.badge{position:absolute;top:6px;left:6px;padding:.1rem .4rem;border-radius:12px;font-size:.55rem;font-weight:700;background:rgba(0,0,0,.75);backdrop-filter:blur(4px)}
+.card.offer .badge{color:var(--part)}.card.photo .badge{color:var(--ac)}
+.cbody{padding:.6rem .7rem}
+.ctitle{font-size:.78rem;font-weight:700;margin-bottom:.3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rw{font-size:.63rem;color:var(--mut);display:flex;gap:.3rem;margin-bottom:.18rem;align-items:flex-start;line-height:1.4}
+.rw.dim{color:#555d75}.rw span:first-child{flex-shrink:0}
+/* Popup personalizado Leaflet */
+.leaflet-popup-content-wrapper{background:var(--s2)!important;color:var(--txt)!important;border:1px solid rgba(255,255,255,.12)!important;border-radius:12px!important;box-shadow:0 8px 32px rgba(0,0,0,.5)!important}
+.leaflet-popup-tip{background:var(--s2)!important}
+.pop{font-family:'DM Sans',sans-serif;min-width:200px}
+.pop-title{font-size:.85rem;font-weight:700;margin-bottom:.5rem}
+.pop-img{width:100%;border-radius:8px;aspect-ratio:4/3;object-fit:cover;cursor:zoom-in;margin-top:.5rem;display:block}
+.pop-row{font-size:.72rem;color:var(--mut);margin-bottom:.25rem;display:flex;gap:.35rem;align-items:flex-start}
+/* Viewer pantalla completa */
+#viewer{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.95);align-items:center;justify-content:center;cursor:zoom-out}
+#viewer.on{display:flex}
+#viewer img{max-width:95vw;max-height:95vh;border-radius:8px}
+/* Tooltip manzanas */
+.tip{background:var(--s2)!important;border:1px solid rgba(255,255,255,.12)!important;color:var(--txt)!important;font-family:'DM Sans',sans-serif!important;font-size:11px!important;border-radius:6px!important}
+/* Mobile */
+@media(max-width:700px){
+  html,body{overflow:auto}
+  .app{height:auto}
+  .main{flex-direction:column;overflow:visible}
+  .map-col{height:55vw;min-height:200px}
+  .sidebar{width:100%;border-left:none;border-top:1px solid var(--brd);overflow:visible}
+  .sb-list{overflow:visible}
+  .mbadge{display:none}
+}
 </style>
 </head>
 <body>
+<div class="app">
   <div class="hdr">
-    <div class="brand">
-      <div class="logo">🗺️</div>
-      <div>
-        <div class="title">CyberGIS <em>Report</em></div>
-        <div class="meta">${fechaStr} · <b>${usuarioActual}</b></div>
-      </div>
-    </div>
-    <div style="font-size:0.6rem;text-align:right;color:var(--mut)">
-      GENERADO POR<br><b>CYBERGIS PRO</b>
-    </div>
+    <div class="logo">🗺️</div>
+    <div><div class="ttl">CyberGIS <em>Report</em></div><div class="meta">${fechaStr} · <b>${usuarioActual}</b></div></div>
+    <span class="mbadge">${isMercadoMode ? 'Estudio de Mercado' : 'Registro Catastral'}</span>
   </div>
-
-  <div class="main-layout">
-    <div id="map-export"></div>
+  <div class="stats">
+    <div class="stat"><div class="sn" style="color:var(--ac)">${items.length}</div><div class="sl">Total</div></div>
+    <div class="stat"><div class="sn" style="color:var(--part)">${totalO}</div><div class="sl">Ofertas</div></div>
+    <div class="stat"><div class="sn" style="color:var(--done)">${totalF}</div><div class="sl">Fotos</div></div>
+    <div class="stat"><div class="sn" style="color:var(--fin)">${finCnt || '—'}</div><div class="sl">Finalizadas</div></div>
+  </div>
+  <div class="main">
+    <div class="map-col"><div id="map"></div></div>
     <div class="sidebar">
-      <div class="stats">
-        <div class="stat"><div class="sn" style="color:var(--ac)">${items.length}</div><div class="sl">Registros</div></div>
-        <div class="stat"><div class="sn" style="color:var(--part)">${items.filter(i => i.isOffer).length}</div><div class="sl">Ofertas</div></div>
-      </div>
-      <div class="grid">${cards}</div>
+      <div class="sb-hdr">📋 ${items.length} registros</div>
+      <div class="sb-list">${cards}</div>
     </div>
   </div>
-
-  <div id="viewer" onclick="this.classList.remove('active')">
-    <img id="viewer-img" src="">
-  </div>
-
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script>
-    const data = ${JSON.stringify(mapData)};
-    const map = L.map('map-export').setView([data[0].lat, data[0].lng], 16);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
-
-    const markers = [];
-    data.forEach((ph, i) => {
-      const color = ph.isOffer ? '#e0b83a' : '#E05C3A';
-      const icon = L.divIcon({
-        html: \`<svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="10" fill="\${color}" stroke="#fff" stroke-width="2"/></svg>\`,
-        className: '', iconSize: [24,24], iconAnchor: [12,12]
-      });
-      const mk = L.marker([ph.lat, ph.lng], {icon}).addTo(map);
-      mk.bindPopup(\`
-        <div style="font-family:sans-serif; min-width:180px">
-          <div class="pop-title" style="color:\${color}">\${ph.isOffer ? '💰 Oferta' : '📸 Foto'}</div>
-          <div style="font-size:12px; margin:4px 0">\${ph.title}</div>
-          \${ph.address ? \`<div style="font-size:11px; opacity:0.8">📍 \${ph.address}</div>\` : ''}
-          <img src="\${ph.img}" class="pop-img" onclick="openFull(this.src)">
-        </div>
-      \`);
-      mk.on('click', () => {
-        document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
-        const card = document.getElementById('card-'+i);
-        card.classList.add('active');
-        card.scrollIntoView({behavior: 'smooth', block: 'center'});
-      });
-      markers.push(mk);
-    });
-
-    function gotoMarker(i) {
-      const ph = data[i];
-      map.flyTo([ph.lat, ph.lng], 18);
-      markers[i].openPopup();
-      document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
-      document.getElementById('card-'+i).classList.add('active');
-    }
-
-    function openFull(src) {
-      const v = document.getElementById('viewer');
-      document.getElementById('viewer-img').src = src;
-      v.classList.add('active');
-    }
-  </script>
+</div>
+<div id="viewer" onclick="this.classList.remove('on')"><img id="vimg" src=""></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"><\/script>
+<script>
+const DATA = ${mapData};
+const POLS = ${polData};
+let activeIdx = null;
+const map = L.map('map');
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,attribution:'© CARTO'}).addTo(map);
+// Polígonos
+const PCOLS = {fin:'#7c5fe6',partial:'#e0b83a',empty:'#E05C3A'};
+POLS.forEach(p => p.rings.forEach(ring => {
+  const col=PCOLS[p.estado]||'#E05C3A';
+  L.polygon(ring,{color:col,fillColor:col,fillOpacity:.2,weight:1.5})
+   .bindTooltip('Manzana '+p.num,{className:'tip'}).addTo(map);
+}));
+// Marcadores
+const MKS=[];
+const BOUNDS=[];
+DATA.forEach((ph,i) => {
+  const col=ph.isOffer?'#e0b83a':'#E05C3A';
+  const svg='<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="10" fill="'+col+'" stroke="#fff" stroke-width="2"/>'+(ph.isOffer?'<text x="12" y="16" text-anchor="middle" fill="#111" font-size="10" font-weight="800">$</text>':'<circle cx="12" cy="12" r="4" fill="#fff"/>')+'</svg>';
+  const icon=L.divIcon({html:svg,className:'',iconSize:[26,26],iconAnchor:[13,13]});
+  const mk=L.marker([ph.lat,ph.lng],{icon,zIndexOffset:500}).addTo(map);
+  mk.bindPopup('<div class="pop"><div class="pop-title" style="color:'+col+'">'+(ph.isOffer?'💰 Oferta':'📸 Foto')+'</div><div style="font-size:.72rem;font-weight:600;margin-bottom:.3rem">'+ph.title+'</div>'+(ph.address?'<div class="pop-row"><span>📍</span><span>'+ph.address+'</span></div>':'')+(ph.phone?'<div class="pop-row"><span>📞</span><span>'+ph.phone+'</span></div>':'')+(ph.details?'<div class="pop-row"><span>📋</span><span>'+ph.details+'</span></div>':'')+'<div class="pop-row" style="opacity:.6"><span>🕐</span><span>'+ph.fecha+'</span></div><img src="'+ph.img+'" class="pop-img" onclick="openViewer(this.src)"></div>',{maxWidth:260});
+  mk.on('click',()=>setActive(i));
+  MKS.push(mk); BOUNDS.push([ph.lat,ph.lng]);
+});
+if(BOUNDS.length) map.fitBounds(L.latLngBounds(BOUNDS),{padding:[40,40]});
+else map.setView([4.6097,-74.0817],13);
+function setActive(i){
+  if(activeIdx!==null){
+    const prev=document.getElementById('card-'+activeIdx);
+    if(prev) prev.classList.remove('active');
+  }
+  activeIdx=i;
+  const card=document.getElementById('card-'+i);
+  if(card){card.classList.add('active');card.scrollIntoView({behavior:'smooth',block:'nearest'});}
+}
+function flyTo(i){
+  map.flyTo([DATA[i].lat,DATA[i].lng],18,{duration:1.2});
+  setTimeout(()=>{MKS[i].openPopup();setActive(i);},1000);
+}
+function openViewer(src){document.getElementById('vimg').src=src;document.getElementById('viewer').classList.add('on');}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.getElementById('viewer').classList.remove('on');});
+<\/script>
 </body></html>`;
-
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const fname = `CyberGIS_Interactivo_${new Date().toISOString().slice(0, 10)}.html`;
-    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
     cerrarLoading();
-    alert(`✅ Reporte Interactivo generado\n🌍 Incluye mapa navegable y fotos integradas`);
-  } catch (e) { cerrarLoading(); alert('Error Reporte: ' + e.message); console.error(e); }
+    alert(`✅ Reporte HTML Interactivo generado\n🗺️ Mapa con ${items.length} puntos · Galería de fotos incluida`);
+  } catch (e) { cerrarLoading(); console.error(e); alert('Error HTML: ' + e.message); }
 }
-
 
 // ════════════════════════════════════════════════════
 //  HELPERS
@@ -1281,4 +1254,6 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeLightbox(); closeDropdown(); cancelPinMode(); }
   });
+
+
 });
