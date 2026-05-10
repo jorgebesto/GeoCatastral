@@ -588,10 +588,30 @@
       letter-spacing: -0.01em;
     }
 
+    @media (max-width: 600px) {
+      .header-title {
+        display: none;
+      }
+      .header-stats {
+        display: none !important;
+      }
+      .dropdown-info-only {
+        display: block !important;
+      }
+      .btn-cta span {
+        display: none;
+      }
+      .btn-cta {
+        padding: 0.45rem 0.6rem;
+      }
+    }
+
+
     .header-title em {
       color: var(--accent);
       font-style: normal;
     }
+
 
     .header-mode-badge {
       font-family: var(--mono);
@@ -1857,6 +1877,20 @@
             <span class="mi-label">Reporte HTML</span>
           </button>
           <div class="menu-divider"></div>
+          
+          <div class="dropdown-info-only" style="display:none">
+            <div class="menu-group-label">Sistema</div>
+            <div class="menu-item disabled">
+               <span class="mi-icon">📊</span>
+               <span class="mi-label" id="menu-mem-val">Memoria: 0MB</span>
+            </div>
+            <div class="menu-item disabled">
+               <span class="mi-icon">📈</span>
+               <span class="mi-label" id="menu-prog-val">Avance: 0/0</span>
+            </div>
+            <div class="menu-divider"></div>
+          </div>
+
           <div class="menu-group-label">Navegación</div>
           <button class="menu-item" onclick="toggleLocation(); closeDropdown()">
             <span class="mi-icon">📍</span>
@@ -1871,6 +1905,7 @@
             <span class="mi-icon">↩</span>
             <span class="mi-label">Nuevo archivo</span>
           </button>
+
         </div>
       </div>
     </div>

@@ -6,7 +6,7 @@
 const SUPA_URL = 'https://cknkscsglejyccwqkiys.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbmtzY3NnbGVqeWNjd3FraXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MTk3ODQsImV4cCI6MjA5MDM5NTc4NH0.V3eYDnFJHhT4ALNKo66yCr1gwUtzsZtQ_ftToQDx48Y';
 
-const SESION_MINUTOS = 20;
+const SESION_MINUTOS = 30;
 let inactividadTimer = null;
 let currentMode = null;
 let usuarioActual = '';
@@ -635,10 +635,13 @@ function updateMemoryUI() {
   const mb = calcMemoryMB(), pct = Math.min(mb / MEM_LIMIT_MB, 1), fill = $('mem-fill');
   if (!fill) return;
   $('stat-mem').style.display = 'flex'; fill.style.width = (pct * 100).toFixed(1) + '%';
-  $('mem-count').textContent = mb.toFixed(1) + ' MB';
+  const label = mb.toFixed(1) + ' MB';
+  $('mem-count').textContent = label;
+  if ($('menu-mem-val')) $('menu-mem-val').textContent = 'Memoria: ' + label;
   fill.className = 'stat-bar-fill';
   if (pct >= MEM_BLOCK_PCT) fill.classList.add('danger'); else if (pct >= MEM_WARN_PCT) fill.classList.add('warn');
 }
+
 
 function updateProgress() {
   const total = features.length;
@@ -646,13 +649,16 @@ function updateProgress() {
     const fin = features.filter(f => finished[f.id]).length;
     $('stat-prog').style.display = 'flex';
     $('prog-fill').style.width = ((fin / total) * 100).toFixed(1) + '%';
-    $('prog-count').textContent = fin + '/' + total;
+    const label = fin + '/' + total;
+    $('prog-count').textContent = label;
+    if ($('menu-prog-val')) $('menu-prog-val').textContent = 'Avance: ' + label;
   }
   const hasAny = Object.values(photos).some(pl => (pl || []).length > 0);
   const miKmz = $('mi-kmz'), miHtml = $('mi-html');
   if (miKmz) miKmz.disabled = !hasAny;
   if (miHtml) miHtml.disabled = !hasAny;
 }
+
 
 // ════════════════════════════════════════════════════
 //  HELPER: recopilar todos los items
@@ -666,174 +672,232 @@ function recopilarItems() {
   return items;
 }
 
-// ════════════════════════════════════════════════════
-//  EXPORTAR EXCEL CON IMÁGENES — ExcelJS
-// ════════════════════════════════════════════════════
+// Redimensiona imagen → JPEG base64 limpio (confirmado funcional con ExcelJS 3.x)
+function prepararImagen(dataUrl, maxPx) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height, 1));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', 0.80).split(',')[1]);
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
 async function exportOfertasToExcel() {
   const items = recopilarItems();
   if (!items.length) { alert('No hay datos para exportar'); return; }
-  mostrarLoading('Generando Excel con imágenes...');
+
+  mostrarLoading('Cargando librería Excel...');
+
   try {
+    // CRÍTICO: usar ExcelJS 3.10.0 — la 4.x tiene bugs confirmados con imágenes en browser
     if (!window.ExcelJS) {
-      await cargarScript('https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
+      await cargarScript('https://cdn.jsdelivr.net/npm/exceljs@3.10.0/dist/exceljs.min.js');
+      await new Promise(r => setTimeout(r, 400));
+    }
+    if (!window.ExcelJS) throw new Error('No se pudo cargar ExcelJS');
+
+    mostrarLoading(`Procesando ${items.length} imágenes...`);
+
+    // Pre-procesar todas las imágenes a JPEG limpio
+    const imagenes = [];
+    for (let i = 0; i < items.length; i++) {
+      mostrarLoading(`Procesando imagen ${i + 1} de ${items.length}...`);
+      imagenes.push(await prepararImagen(items[i].dataUrl, 800));
     }
 
-    const wb = new ExcelJS.Workbook();
-    wb.creator = 'CyberGIS'; wb.created = new Date();
+    mostrarLoading('Construyendo Excel...');
 
-    // ── COLORES ──────────────────────────────────────
+    const ROW_PT = 90; // altura de fila en puntos para que quepa la imagen
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'CyberGIS';
+    wb.modified = new Date();
+
+    // ── COLORES ───────────────────────────────────────
     const C = {
-      headerBg: 'FF1E2435', headerFg: 'FFECEAF3',
-      accent: 'FFE05C3A', accentFg: 'FFFFFFFF',
-      rowOdd: 'FF191D26', rowEven: 'FF1A1F2E',
+      accent: 'FFE05C3A',
+      accentFg: 'FFFFFFFF',
+      hdrBg: 'FF1E2435',
+      hdrFg: 'FFECEAF3',
+      rowOdd: 'FF191D26',
+      rowEven: 'FF1F2535',
       offerBg: 'FF1E1A0A',
-      text: 'FFECEAF3', muted: 'FF8890A8',
+      text: 'FFECEAF3',
+      muted: 'FF8890A8',
       border: 'FF2A2F44',
-      done: 'FF3AB87A', partial: 'FFE0B83A',
+      partial: 'FFE0B83A',
+      done: 'FF3AB87A',
     };
 
-    // ── HOJA 1: REGISTROS ────────────────────────────
-    const ws = wb.addWorksheet('Registros', { views: [{ state: 'frozen', ySplit: 2 }] });
+    // ── HOJA 1: REGISTROS ─────────────────────────────
+    const ws = wb.addWorksheet('Registros', {
+      views: [{ state: 'frozen', ySplit: 2, xSplit: 0 }]
+    });
 
-    ws.columns = [
-      { key: 'img', width: 19 },  // A
-      { key: 'tipo', width: 13 },  // B
-      { key: 'fecha', width: 13 },  // C
-      { key: 'hora', width: 10 },  // D
-      { key: 'manzana', width: 22 },  // E
-      { key: 'dir', width: 34 },  // F
-      { key: 'tel', width: 18 },  // G
-      { key: 'detalles', width: 42 },  // H
-      { key: 'lat', width: 15 },  // I
-      { key: 'lng', width: 15 },  // J
-      { key: 'usuario', width: 18 },  // K
-    ];
+    // Anchos de columna (unidades Excel: ~7px cada una)
+    ws.getColumn(1).width = 22;   // A  Foto
+    ws.getColumn(2).width = 12;   // B  Tipo
+    ws.getColumn(3).width = 13;   // C  Fecha
+    ws.getColumn(4).width = 10;   // D  Hora
+    ws.getColumn(5).width = 22;   // E  Manzana
+    ws.getColumn(6).width = 32;   // F  Dirección
+    ws.getColumn(7).width = 18;   // G  Teléfono
+    ws.getColumn(8).width = 38;   // H  Detalles
+    ws.getColumn(9).width = 14;   // I  Lat
+    ws.getColumn(10).width = 14;   // J  Lng
+    ws.getColumn(11).width = 18;   // K  Usuario
 
-    // Fila 1 — Título
+    // ── Fila 1: título ────────────────────────────────
     ws.mergeCells('A1:K1');
-    const tR = ws.getRow(1); tR.height = 38;
-    const tC = ws.getCell('A1');
-    tC.value = `CYBERGIS  ·  ${isMercadoMode ? 'Estudio de Mercado' : 'Registro Catastral'}  ·  ${new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`;
-    tC.font = { name: 'Calibri', bold: true, size: 13, color: { argb: C.accentFg } };
-    tC.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.accent } };
-    tC.alignment = { vertical: 'middle', horizontal: 'center' };
+    const r1 = ws.getRow(1); r1.height = 36;
+    const c1 = ws.getCell('A1');
+    c1.value = `CYBERGIS  ·  ${isMercadoMode ? 'Estudio de Mercado' : 'Registro Catastral'}  ·  ${new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`;
+    c1.font = { name: 'Calibri', bold: true, size: 13, color: { argb: C.accentFg } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.accent } };
+    c1.alignment = { vertical: 'middle', horizontal: 'center' };
 
-    // Fila 2 — Encabezados
-    const hdrs = ['Foto', 'Tipo', 'Fecha', 'Hora', 'Manzana / Zona', 'Dirección', 'Teléfono', 'Detalles / Precio', 'Latitud', 'Longitud', 'Usuario'];
-    const hR = ws.addRow(hdrs); hR.height = 26;
-    hR.eachCell(cell => {
-      cell.font = { name: 'Calibri', bold: true, size: 10, color: { argb: C.headerFg } };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
+    // ── Fila 2: encabezados ───────────────────────────
+    const HDRS = ['Foto', 'Tipo', 'Fecha', 'Hora', 'Manzana / Zona', 'Dirección', 'Teléfono', 'Detalles / Precio', 'Latitud', 'Longitud', 'Usuario'];
+    const r2 = ws.addRow(HDRS); r2.height = 24;
+    r2.eachCell(cell => {
+      cell.font = { name: 'Calibri', bold: true, size: 10, color: { argb: C.hdrFg } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.hdrBg } };
       cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
       cell.border = { bottom: { style: 'medium', color: { argb: C.accent } } };
     });
 
-    // Filas de datos
-    const IMG_H = 82;
+    // ── Filas de datos + imágenes ─────────────────────
     for (let i = 0; i < items.length; i++) {
       const ph = items[i];
-      const rowN = i + 3;
-      const isOff = ph.isOffer;
-      const bgKey = isOff ? C.offerBg : (i % 2 === 0 ? C.rowOdd : C.rowEven);
-
+      const rowN = i + 3;           // filas Excel (1-based): 1=título, 2=header, 3..N=datos
+      const isOff = !!ph.isOffer;
+      const bgCol = isOff ? C.offerBg : (i % 2 === 0 ? C.rowOdd : C.rowEven);
       const fecha = new Date(ph.fecha);
-      const row = ws.addRow([
-        '',
-        isOff ? 'OFERTA' : 'FOTO',
-        fecha.toLocaleDateString('es-CO'),
-        fecha.toLocaleTimeString('es-CO'),
-        ph.manzana,
-        ph.address || '—',
-        ph.phone || '—',
-        ph.details || '—',
-        ph.lat.toFixed(7),
-        ph.lng.toFixed(7),
-        usuarioActual
-      ]);
-      row.height = IMG_H;
 
-      row.eachCell((cell, colIdx) => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgKey } };
+      // Agregar fila con datos (columna A vacía — ahí va la imagen)
+      const row = ws.addRow([
+        '',                                          // A — imagen aquí
+        isOff ? 'OFERTA' : 'FOTO',                  // B
+        fecha.toLocaleDateString('es-CO'),           // C
+        fecha.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }), // D
+        ph.manzana || '—',                           // E
+        ph.address || '—',                          // F
+        ph.phone || '—',                          // G
+        ph.details || '—',                          // H
+        ph.lat.toFixed(6),                           // I
+        ph.lng.toFixed(6),                           // J
+        usuarioActual                                // K
+      ]);
+
+      // Altura exacta para que quepa la imagen
+      row.height = ROW_PT;
+
+      // Estilos de todas las celdas
+      row.eachCell((cell, colNum) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgCol } };
         cell.font = { name: 'Calibri', size: 9, color: { argb: C.text } };
-        cell.alignment = { vertical: 'middle', horizontal: colIdx === 1 ? 'center' : 'left', wrapText: true };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'center' : 'left', wrapText: true };
         cell.border = { bottom: { style: 'hair', color: { argb: C.border } } };
       });
 
-      // Celda Tipo con color
-      const tcell = ws.getCell(`B${rowN}`);
-      tcell.font = { name: 'Calibri', size: 9, bold: true, color: { argb: isOff ? C.partial : C.accent } };
-      tcell.alignment = { vertical: 'middle', horizontal: 'center' };
+      // Tipo: color especial
+      const cTipo = ws.getCell(rowN, 2);
+      cTipo.font = { name: 'Calibri', size: 9, bold: true, color: { argb: isOff ? C.partial : C.accent } };
+      cTipo.alignment = { vertical: 'middle', horizontal: 'center' };
 
-      // Coordenadas en monospace
-      ['I', 'J'].forEach(col => {
-        const c = ws.getCell(`${col}${rowN}`);
-        c.font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
-        c.alignment = { vertical: 'middle', horizontal: 'center' };
-      });
+      // Lat/Lng: monospace
+      ws.getCell(rowN, 9).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
+      ws.getCell(rowN, 9).alignment = { vertical: 'middle', horizontal: 'center' };
+      ws.getCell(rowN, 10).font = { name: 'Courier New', size: 8, color: { argb: C.muted } };
+      ws.getCell(rowN, 10).alignment = { vertical: 'middle', horizontal: 'center' };
 
-      // Insertar imagen
-      try {
-        const b64 = ph.dataUrl.split(',')[1];
-        const ext = ph.dataUrl.startsWith('data:image/png') ? 'png' : 'jpeg';
-        const imgId = wb.addImage({ base64: b64, extension: ext });
-        ws.addImage(imgId, {
-          tl: { col: 0, row: rowN - 1 },
-          br: { col: 1, row: rowN },
-          editAs: 'oneCell'
-        });
-      } catch (imgErr) { console.warn('Imagen no insertada:', imgErr); }
+      // ── INSERTAR IMAGEN con range string (método confirmado) ──
+      const b64img = imagenes[i];
+      if (b64img) {
+        try {
+          const imgId = wb.addImage({ base64: b64img, extension: 'jpeg' });
+          // Range string 'A{row}:A{row}' — método documentado y probado que SÍ funciona
+          const colLetter = 'A';
+          ws.addImage(imgId, `${colLetter}${rowN}:${colLetter}${rowN}`);
+        } catch (e2) {
+          console.warn(`Imagen ${i + 1} no insertada:`, e2.message);
+        }
+      }
     }
 
-    ws.autoFilter = { from: 'A2', to: `K${items.length + 2}` };
+    // Autofilter desde fila 2
+    ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: items.length + 2, column: 11 } };
 
-    // ── HOJA 2: RESUMEN ──────────────────────────────
+    // ── HOJA 2: RESUMEN ───────────────────────────────
     const ws2 = wb.addWorksheet('Resumen');
-    ws2.columns = [{ width: 30 }, { width: 22 }, { width: 12 }, { width: 12 }];
+    ws2.getColumn(1).width = 30;
+    ws2.getColumn(2).width = 24;
 
-    ws2.mergeCells('A1:D1');
-    const s1 = ws2.getRow(1); s1.height = 32;
-    ws2.getCell('A1').value = '  📊  RESUMEN DEL LEVANTAMIENTO';
+    ws2.mergeCells('A1:B1');
+    const rS1 = ws2.getRow(1); rS1.height = 32;
+    ws2.getCell('A1').value = 'RESUMEN DEL LEVANTAMIENTO';
     ws2.getCell('A1').font = { name: 'Calibri', bold: true, size: 13, color: { argb: C.accentFg } };
     ws2.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.accent } };
-    ws2.getCell('A1').alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+    ws2.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
 
-    const s2 = ws2.addRow(['Indicador', 'Valor']); s2.height = 22;
-    s2.eachCell(c => {
-      c.font = { name: 'Calibri', bold: true, size: 10, color: { argb: C.headerFg } };
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
+    const rS2 = ws2.addRow(['Indicador', 'Valor']); rS2.height = 22;
+    rS2.eachCell(c => {
+      c.font = { name: 'Calibri', bold: true, size: 10, color: { argb: C.hdrFg } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.hdrBg } };
       c.alignment = { vertical: 'middle' };
     });
 
-    const totalF = items.filter(i => !i.isOffer).length;
-    const totalO = items.filter(i => i.isOffer).length;
+    const totalF = items.filter(x => !x.isOffer).length;
+    const totalO = items.filter(x => x.isOffer).length;
     const finCnt = features.filter(f => finished[f.id]).length;
-    const srRows = [
+
+    [
       ['Usuario', usuarioActual],
-      ['Fecha de exportación', new Date().toLocaleString('es-CO')],
+      ['Fecha exportación', new Date().toLocaleString('es-CO')],
       ['Modo', isMercadoMode ? 'Estudio de Mercado' : 'Registro Catastral'],
       ['Total registros', items.length],
       ['Fotos normales', totalF],
       ['Ofertas', totalO],
       ['Manzanas totales', features.length || 'N/A'],
       ['Manzanas finalizadas', finCnt || 'N/A'],
-    ];
-    srRows.forEach((sr, i) => {
+    ].forEach((sr, idx) => {
       const r = ws2.addRow(sr); r.height = 20;
       r.getCell(1).font = { name: 'Calibri', bold: true, size: 9, color: { argb: C.muted } };
       r.getCell(2).font = { name: 'Calibri', bold: false, size: 9, color: { argb: C.text } };
-      const bg = i % 2 === 0 ? C.rowOdd : C.rowEven;
-      r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }; c.alignment = { vertical: 'middle' }; });
+      const bg = idx % 2 === 0 ? C.rowOdd : C.rowEven;
+      r.eachCell(c => {
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+        c.alignment = { vertical: 'middle' };
+      });
     });
 
-    // Guardar y descargar
+    // ── GENERAR Y DESCARGAR ───────────────────────────
+    mostrarLoading('Guardando archivo...');
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const fname = `CyberGIS_${isMercadoMode ? 'Mercado' : 'Catastral'}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+
     cerrarLoading();
-    alert(`✅ Excel generado con éxito\n📊 ${items.length} registros con imágenes incrustadas\n📄 Hoja de resumen incluida`);
+    const imgOk = imagenes.filter(x => x !== null).length;
+    alert(`✅ Excel descargado correctamente\n📊 ${items.length} registros\n🖼️ ${imgOk} imágenes incrustadas\n📋 Hoja de resumen incluida`);
+
   } catch (err) {
-    cerrarLoading(); console.error(err); alert('Error al generar Excel: ' + err.message);
+    cerrarLoading();
+    console.error('Error Excel:', err);
+    alert('Error al generar Excel: ' + err.message + '\n\nRevisa la consola para más detalles.');
   }
 }
 
@@ -914,14 +978,27 @@ async function exportKMZ() {
 async function exportHTML() {
   const items = recopilarItems();
   if (!items.length) { alert('No hay datos para exportar'); return; }
-  mostrarLoading('Generando reporte HTML...');
+  mostrarLoading('Generando reporte interactivo...');
   try {
-    const fecha = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const fechaStr = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    
+    // Preparar datos para el mapa en el HTML
+    const mapData = items.map(ph => ({
+      lat: ph.lat,
+      lng: ph.lng,
+      isOffer: !!ph.isOffer,
+      title: ph.manzana || 'Registro',
+      address: ph.address || '',
+      phone: ph.phone || '',
+      details: ph.details || '',
+      fecha: new Date(ph.fecha).toLocaleString('es-CO'),
+      img: ph.dataUrl
+    }));
 
     const cards = items.map((ph, i) => `
-    <div class="card ${ph.isOffer ? 'offer' : 'photo'}">
+    <div class="card ${ph.isOffer ? 'offer' : 'photo'}" id="card-${i}">
       <div class="card-img">
-        <img src="${ph.dataUrl}" alt="Foto ${i + 1}" loading="lazy">
+        <img src="${ph.dataUrl}" alt="Foto ${i + 1}" loading="lazy" onclick="openFull(this.src)" style="cursor:zoom-in">
         <span class="badge">${ph.isOffer ? '💰 Oferta' : '📸 Foto'}</span>
       </div>
       <div class="card-body">
@@ -931,76 +1008,155 @@ async function exportHTML() {
         ${ph.details ? `<div class="row"><span class="ic">📋</span><span>${ph.details}</span></div>` : ''}
         <div class="row dim"><span class="ic">🕐</span><span>${new Date(ph.fecha).toLocaleString('es-CO')}</span></div>
         <div class="row dim"><span class="ic">📌</span><span>${ph.lat.toFixed(6)}, ${ph.lng.toFixed(6)}</span></div>
+        <button class="btn-goto" onclick="gotoMarker(${i})">Ver en mapa</button>
       </div>
     </div>`).join('\n');
-
-    const statsHtml = `
-    <div class="stats">
-      <div class="stat"><div class="sn" style="color:#E05C3A">${items.length}</div><div class="sl">Total Registros</div></div>
-      <div class="stat"><div class="sn" style="color:#e0b83a">${items.filter(i => i.isOffer).length}</div><div class="sl">Ofertas</div></div>
-      <div class="stat"><div class="sn" style="color:#3ab87a">${items.filter(i => !i.isOffer).length}</div><div class="sl">Fotos</div></div>
-      <div class="stat"><div class="sn" style="color:#7c5fe6">${features.filter(f => finished[f.id]).length || '—'}</div><div class="sl">Finalizadas</div></div>
-    </div>`;
 
     const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CyberGIS — Reporte ${isMercadoMode ? 'Mercado' : 'Catastral'}</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<title>CyberGIS — Reporte Interactivo</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
-  :root{--bg:#111318;--s:#191d26;--s2:#1f2435;--ac:#E05C3A;--done:#3ab87a;--part:#e0b83a;--txt:#eceaf3;--mut:#8890a8;--brd:rgba(255,255,255,.07)}
+  :root{--bg:#0f1115;--s:#161a22;--s2:#1c222d;--ac:#E05C3A;--part:#e0b83a;--txt:#eceaf3;--mut:#8890a8;--brd:rgba(255,255,255,.06)}
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--txt);font-family:'DM Sans',sans-serif}
-  .hdr{background:var(--s);border-bottom:1px solid var(--brd);padding:1.2rem 2rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem}
-  .brand{display:flex;align-items:center;gap:.75rem}
-  .logo{width:42px;height:42px;background:rgba(224,92,58,.15);border:1px solid rgba(224,92,58,.3);border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:1.2rem}
-  .title{font-size:1.3rem;font-weight:700;letter-spacing:-.02em}.title em{color:var(--ac);font-style:normal}
-  .meta{font-size:.72rem;color:var(--mut);margin-top:.15rem}
-  .mode-badge{padding:.22rem .7rem;border-radius:20px;background:rgba(224,92,58,.12);color:var(--ac);font-size:.62rem;font-weight:600;font-family:monospace;letter-spacing:.05em}
-  .stats{display:flex;gap:1rem;flex-wrap:wrap;padding:1.2rem 2rem;background:var(--s);border-bottom:1px solid var(--brd)}
-  .stat{background:var(--s2);border:1px solid var(--brd);border-radius:12px;padding:.9rem 1.4rem;text-align:center;min-width:110px}
-  .sn{font-size:1.9rem;font-weight:700}.sl{font-size:.65rem;color:var(--mut);margin-top:.15rem;text-transform:uppercase;letter-spacing:.06em}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:1.1rem;padding:1.8rem}
-  .card{background:var(--s);border:1px solid var(--brd);border-radius:15px;overflow:hidden;transition:transform .2s,box-shadow .2s}
-  .card:hover{transform:translateY(-3px);box-shadow:0 12px 36px rgba(0,0,0,.4)}
-  .card.offer{border-color:rgba(224,184,58,.2)}
-  .card-img{position:relative;aspect-ratio:4/3;overflow:hidden;background:#0a0c10}
+  body{background:var(--bg);color:var(--txt);font-family:'DM Sans',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  
+  .hdr{background:var(--s);border-bottom:1px solid var(--brd);padding:0.8rem 1.5rem;display:flex;align-items:center;justify-content:space-between;z-index:100}
+  .brand{display:flex;align-items:center;gap:0.8rem}
+  .logo{font-size:1.5rem;background:rgba(224,92,58,0.1);padding:0.4rem;border-radius:10px;border:1px solid rgba(224,92,58,0.2)}
+  .title{font-size:1.1rem;font-weight:700}
+  .title em{color:var(--ac);font-style:normal}
+  .meta{font-size:0.7rem;color:var(--mut)}
+
+  .main-layout{display:flex;flex:1;overflow:hidden}
+  #map-export{flex:1;background:#0a0c10}
+  .sidebar{width:380px;background:var(--s);border-left:1px solid var(--brd);overflow-y:auto;padding:1.2rem;display:flex;flex-direction:column;gap:1rem}
+  
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.5rem}
+  .stat{background:var(--s2);padding:0.7rem;border-radius:10px;text-align:center;border:1px solid var(--brd)}
+  .sn{font-size:1.2rem;font-weight:700}.sl{font-size:0.6rem;color:var(--mut);text-transform:uppercase;letter-spacing:1px}
+
+  .grid{display:flex;flex-direction:column;gap:1rem}
+  .card{background:var(--s2);border:1px solid var(--brd);border-radius:12px;overflow:hidden;transition:all 0.2s}
+  .card:hover{border-color:rgba(255,255,255,0.15)}
+  .card.active{border-color:var(--ac);box-shadow:0 0 15px rgba(224,92,58,0.2)}
+  .card-img{position:relative;aspect-ratio:16/9;overflow:hidden}
   .card-img img{width:100%;height:100%;object-fit:cover}
-  .badge{position:absolute;top:8px;left:8px;padding:.18rem .55rem;border-radius:20px;font-size:.6rem;font-weight:700;background:rgba(0,0,0,.72);backdrop-filter:blur(6px);letter-spacing:.04em}
+  .badge{position:absolute;top:8px;left:8px;padding:3px 8px;border-radius:12px;font-size:0.6rem;font-weight:700;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px)}
   .card.offer .badge{color:var(--part)}.card.photo .badge{color:var(--ac)}
-  .card-body{padding:.9rem}
-  .card-title{font-size:.88rem;font-weight:700;margin-bottom:.55rem}
-  .row{font-size:.73rem;color:var(--mut);margin-bottom:.28rem;display:flex;align-items:flex-start;gap:.4rem;line-height:1.4}
-  .row.dim{color:#555d75}.ic{flex-shrink:0;font-size:.78rem}
-  .footer{text-align:center;padding:1.8rem;font-size:.68rem;color:var(--mut);border-top:1px solid var(--brd)}
-  @media(max-width:600px){.grid{grid-template-columns:1fr;padding:1rem}.hdr,.stats{padding:1rem}}
-  @media print{body{background:#fff;color:#111}.card{break-inside:avoid;border-color:#ddd}}
+  .card-body{padding:0.8rem}
+  .card-title{font-size:0.85rem;font-weight:700;margin-bottom:0.4rem}
+  .row{font-size:0.72rem;color:var(--mut);margin-bottom:0.2rem;display:flex;align-items:flex-start;gap:0.4rem}
+  .dim{opacity:0.6;font-size:0.65rem}.ic{flex-shrink:0}
+  .btn-goto{width:100%;margin-top:0.6rem;background:var(--s);border:1px solid var(--brd);color:var(--txt);padding:0.4rem;border-radius:6px;font-size:0.7rem;cursor:pointer;transition:0.2s}
+  .btn-goto:hover{background:var(--ac);border-color:var(--ac)}
+
+  /* Custom Popup */
+  .leaflet-popup-content-wrapper{background:var(--s2);color:var(--txt);border:1px solid var(--brd);border-radius:12px}
+  .leaflet-popup-tip{background:var(--s2)}
+  .pop-title{font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:5px}
+  .pop-img{width:100%;border-radius:8px;margin-top:8px;aspect-ratio:4/3;object-fit:cover;cursor:zoom-in}
+
+  /* Fullscreen Viewer */
+  #viewer{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.95);align-items:center;justify-content:center;cursor:zoom-out}
+  #viewer.active{display:flex}
+  #viewer img{max-width:95vw;max-height:95vh;border-radius:8px;box-shadow:0 0 50px rgba(0,0,0,0.8)}
+
+  @media(max-width:900px){
+    .main-layout{flex-direction:column}
+    .sidebar{width:100%;height:40%;border-left:none;border-top:1px solid var(--brd)}
+    .hdr{padding:0.6rem 1rem}.logo{padding:0.2rem}
+  }
 </style>
 </head>
 <body>
-<div class="hdr">
-  <div class="brand">
-    <div class="logo">🗺️</div>
-    <div>
-      <div class="title">CyberGIS <em>Report</em></div>
-      <div class="meta">${fecha} · Usuario: <strong>${usuarioActual}</strong></div>
+  <div class="hdr">
+    <div class="brand">
+      <div class="logo">🗺️</div>
+      <div>
+        <div class="title">CyberGIS <em>Report</em></div>
+        <div class="meta">${fechaStr} · <b>${usuarioActual}</b></div>
+      </div>
+    </div>
+    <div style="font-size:0.6rem;text-align:right;color:var(--mut)">
+      GENERADO POR<br><b>CYBERGIS PRO</b>
     </div>
   </div>
-  <span class="mode-badge">${isMercadoMode ? 'Estudio de Mercado' : 'Registro Catastral'}</span>
-</div>
-${statsHtml}
-<div class="grid">${cards}</div>
-<div class="footer">Generado por CyberGIS Professional Edition · ${new Date().toISOString()}</div>
+
+  <div class="main-layout">
+    <div id="map-export"></div>
+    <div class="sidebar">
+      <div class="stats">
+        <div class="stat"><div class="sn" style="color:var(--ac)">${items.length}</div><div class="sl">Registros</div></div>
+        <div class="stat"><div class="sn" style="color:var(--part)">${items.filter(i => i.isOffer).length}</div><div class="sl">Ofertas</div></div>
+      </div>
+      <div class="grid">${cards}</div>
+    </div>
+  </div>
+
+  <div id="viewer" onclick="this.classList.remove('active')">
+    <img id="viewer-img" src="">
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script>
+    const data = ${JSON.stringify(mapData)};
+    const map = L.map('map-export').setView([data[0].lat, data[0].lng], 16);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+
+    const markers = [];
+    data.forEach((ph, i) => {
+      const color = ph.isOffer ? '#e0b83a' : '#E05C3A';
+      const icon = L.divIcon({
+        html: \`<svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="10" fill="\${color}" stroke="#fff" stroke-width="2"/></svg>\`,
+        className: '', iconSize: [24,24], iconAnchor: [12,12]
+      });
+      const mk = L.marker([ph.lat, ph.lng], {icon}).addTo(map);
+      mk.bindPopup(\`
+        <div style="font-family:sans-serif; min-width:180px">
+          <div class="pop-title" style="color:\${color}">\${ph.isOffer ? '💰 Oferta' : '📸 Foto'}</div>
+          <div style="font-size:12px; margin:4px 0">\${ph.title}</div>
+          \${ph.address ? \`<div style="font-size:11px; opacity:0.8">📍 \${ph.address}</div>\` : ''}
+          <img src="\${ph.img}" class="pop-img" onclick="openFull(this.src)">
+        </div>
+      \`);
+      mk.on('click', () => {
+        document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
+        const card = document.getElementById('card-'+i);
+        card.classList.add('active');
+        card.scrollIntoView({behavior: 'smooth', block: 'center'});
+      });
+      markers.push(mk);
+    });
+
+    function gotoMarker(i) {
+      const ph = data[i];
+      map.flyTo([ph.lat, ph.lng], 18);
+      markers[i].openPopup();
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
+      document.getElementById('card-'+i).classList.add('active');
+    }
+
+    function openFull(src) {
+      const v = document.getElementById('viewer');
+      document.getElementById('viewer-img').src = src;
+      v.classList.add('active');
+    }
+  </script>
 </body></html>`;
 
+
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const fname = `CyberGIS_Reporte_${new Date().toISOString().slice(0, 10)}.html`;
+    const fname = `CyberGIS_Interactivo_${new Date().toISOString().slice(0, 10)}.html`;
     const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
     cerrarLoading();
-    alert(`✅ Reporte HTML generado\n📄 ${items.length} registros · se abre en cualquier navegador`);
-  } catch (e) { cerrarLoading(); alert('Error HTML: ' + e.message); }
+    alert(`✅ Reporte Interactivo generado\n🌍 Incluye mapa navegable y fotos integradas`);
+  } catch (e) { cerrarLoading(); alert('Error Reporte: ' + e.message); console.error(e); }
 }
+
 
 // ════════════════════════════════════════════════════
 //  HELPERS
@@ -1019,34 +1175,6 @@ function cargarScript(src) {
 // ════════════════════════════════════════════════════
 //  AUTOSAVE INDEXEDDB
 // ════════════════════════════════════════════════════
-async function restaurarDatosSesion() {
-  try {
-    const d = await abrirDB(), tx = d.transaction('sesion', 'readonly');
-    const req = tx.objectStore('sesion').get('sesion_actual');
-    req.onsuccess = () => {
-      const data = req.result;
-      if (data) {
-        if (confirm(`Se encontró un trabajo previo del ${new Date(data.ts).toLocaleString()}. ¿Deseas restaurar los datos?`)) {
-          features = data.features || [];
-          photos = data.photos || {};
-          finished = data.finished || {};
-          currentMode = data.mode;
-          isMercadoMode = (currentMode === 'mercado');
-
-          if (isMercadoMode) {
-            mostrarAppScreen('Estudio de Mercado');
-            launchApp();
-            setTimeout(startLocation, 1000);
-          } else if (features.length) {
-            mostrarAppScreen('Registro Catastral');
-            launchApp();
-          }
-        }
-      }
-    };
-  } catch (e) { console.warn('No se pudo restaurar la sesión:', e); }
-}
-
 const DB_NAME = 'cybergis_autosave';
 let dbInstance = null;
 
@@ -1072,37 +1200,17 @@ async function borrarSesionGuardada() {
   try { const d = await abrirDB(), tx = d.transaction('sesion', 'readwrite'); tx.objectStore('sesion').delete('sesion_actual'); } catch (e) { }
 }
 
-function resetApp() {
-  if (confirm('¿Volver al inicio? Se perderán los datos no exportados.')) { borrarSesionGuardada(); location.reload(); }
-}
-
-async function cerrarSesion() {
-  if (confirm('¿Estás seguro que deseas cerrar sesión? Se borrarán los datos no exportados y volverás a la pantalla de licencia.')) {
-    // 1. Limpiar watchers y estado
-    if (locationWatchId) navigator.geolocation.clearWatch(locationWatchId);
-
-    // 2. Limpiar LocalStorage
+function cerrarSesion() {
+  if (confirm('¿Cerrar sesión? Tendrás que volver a ingresar tu código de licencia.')) {
     localStorage.removeItem('catastral_licencia');
-
-    // 3. Limpiar IndexedDB y Recargar
-    try {
-      if (dbInstance) {
-        dbInstance.close();
-        dbInstance = null;
-      }
-      const req = indexedDB.deleteDatabase(DB_NAME);
-      req.onsuccess = () => location.reload();
-      req.onerror = () => location.reload();
-      req.onblocked = () => location.reload();
-
-      // Fallback si nada pasa en 1 segundo
-      setTimeout(() => location.reload(), 1000);
-    } catch (e) {
-      location.reload();
-    }
+    borrarSesionGuardada();
+    location.reload();
   }
 }
 
+function resetApp() {
+  if (confirm('¿Volver al inicio? Se perderán los datos no exportados.')) { borrarSesionGuardada(); location.reload(); }
+}
 
 // ════════════════════════════════════════════════════
 //  BOOTSTRAP — DOMContentLoaded
@@ -1112,25 +1220,6 @@ window.addEventListener('DOMContentLoaded', () => {
   // Licencia
   $('lic-btn').addEventListener('click', verificarLicencia);
   $('lic-input').addEventListener('keydown', e => { if (e.key === 'Enter') verificarLicencia(); });
-
-  // Verificar sesión existente al cargar
-  const sesionGuardada = JSON.parse(localStorage.getItem('catastral_licencia') || 'null');
-  if (sesionGuardada) {
-    const ahora = new Date();
-    const ultima = new Date(sesionGuardada.ultimaActividad);
-    const difMinutos = (ahora - ultima) / (1000 * 60);
-
-    if (difMinutos < SESION_MINUTOS) {
-      usuarioActual = sesionGuardada.nombre;
-      if ($('user-name-display')) $('user-name-display').textContent = usuarioActual;
-      mostrarSeleccionModo();
-      // Intentar recuperar datos de IndexedDB
-      setTimeout(restaurarDatosSesion, 500);
-    } else {
-      localStorage.removeItem('catastral_licencia');
-    }
-  }
-
 
   // Archivos geo
   $('shp-input').addEventListener('change', handleShapefile);
@@ -1168,4 +1257,20 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeLightbox(); closeDropdown(); cancelPinMode(); }
   });
+
+  // Sesión guardada
+  const ses = localStorage.getItem('catastral_licencia');
+  if (ses) {
+    try {
+      const s = JSON.parse(ses);
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      const vence = new Date(s.vence + 'T00:00:00');
+      if (hoy <= vence) {
+        usuarioActual = s.nombre;
+        $('user-name-display').textContent = usuarioActual;
+        mostrarSeleccionModo();
+        $('license-screen').classList.add('hide');
+      }
+    } catch (e) { }
+  }
 });
