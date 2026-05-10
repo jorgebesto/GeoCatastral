@@ -6,8 +6,9 @@
 const SUPA_URL = 'https://cknkscsglejyccwqkiys.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbmtzY3NnbGVqeWNjd3FraXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4MTk3ODQsImV4cCI6MjA5MDM5NTc4NH0.V3eYDnFJHhT4ALNKo66yCr1gwUtzsZtQ_ftToQDx48Y';
 
-const SESION_MINUTOS = 30;
+const SESION_MINUTOS = 10;
 let inactividadTimer = null;
+
 let currentMode = null;
 let usuarioActual = '';
 
@@ -78,11 +79,47 @@ function mostrarMsgLic(msg, tipo) {
   const d = $('lic-msg'); d.textContent = msg; d.className = 'msg-box ' + tipo;
 }
 
-function mostrarSeleccionModo() {
+async function mostrarSeleccionModo() {
   $('license-screen').classList.add('hide');
   $('selection-screen').style.display = 'flex';
   iniciarTimerInactividad();
+  
+  // 💾 Verificar si hay progreso previo para recuperar
+  await verificarSesionGuardada();
 }
+
+async function verificarSesionGuardada() {
+  try {
+    const d = await abrirDB(), tx = d.transaction('sesion', 'readonly');
+    const ses = await new Promise((res, rej) => {
+      const req = tx.objectStore('sesion').get('sesion_actual');
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    if (ses && ses.mode && (ses.features?.length || ses.photos['standalone']?.length)) {
+      const fecha = new Date(ses.ts).toLocaleString();
+      if (confirm(`Se encontró un avance guardado del ${fecha}.\n¿Deseas recuperar los datos y continuar trabajando?`)) {
+        currentMode = ses.mode;
+        isMercadoMode = (currentMode === 'mercado');
+        features = ses.features || [];
+        photos = ses.photos || {};
+        finished = ses.finished || {};
+        
+        $('selection-screen').style.display = 'none';
+        mostrarAppScreen(isMercadoMode ? 'Estudio de Mercado' : 'Registro Catastral');
+        launchApp();
+        if (isMercadoMode) {
+          $('legend-bar').style.display = 'flex';
+          $('header-stats').style.display = 'flex';
+          setTimeout(() => startLocation(), 800);
+        }
+        return true;
+      }
+    }
+  } catch (e) { console.warn('No se pudo recuperar la sesión:', e); }
+  return false;
+}
+
 async function notificarIngreso(codigo, usuario) {
   try {
     await fetch("https://cknkscsglejyccwqkiys.supabase.co/functions/v1/rapid-endpoint", {
@@ -121,7 +158,10 @@ function initCatastralMode() {
 
 function initMercadoMode() {
   currentMode = 'mercado'; isMercadoMode = true;
-  features = []; photos = { standalone: [] }; finished = {};
+  // Solo inicializar si está vacío (evitar sobreescribir si se recuperó sesión)
+  if (!features.length && (!photos['standalone'] || photos['standalone'].length === 0)) {
+    features = []; photos = { standalone: [] }; finished = {};
+  }
   $('selection-screen').style.display = 'none';
   mostrarAppScreen('Estudio de Mercado');
   $('legend-bar').style.display = 'flex';
@@ -129,6 +169,7 @@ function initMercadoMode() {
   launchApp();
   setTimeout(() => startLocation(), 800);
 }
+
 
 function backToSelection() {
   $('upload-screen').style.display = 'none';
@@ -1270,5 +1311,19 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Escape') { closeLightbox(); closeDropdown(); cancelPinMode(); }
   });
 
+  // Sesión guardada (Auto-login para persistencia)
+  const ses = localStorage.getItem('catastral_licencia');
+  if (ses) {
+    try {
+      const s = JSON.parse(ses);
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      const vence = new Date(s.vence + 'T00:00:00');
+      if (hoy <= vence) {
+        usuarioActual = s.nombre;
+        $('user-name-display').textContent = usuarioActual;
+        mostrarSeleccionModo();
 
-});
+      }
+    } catch (e) { }
+  }
+});
