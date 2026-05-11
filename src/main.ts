@@ -196,28 +196,44 @@ function selectManzana(id: number | string) {
     STATE.currentId = id;
     if (!STATE.photos[id]) STATE.photos[id] = [];
 
-    // Actualizar estilos polígonos
-    STATE.features.forEach(f => {
-        const layers = STATE.leafletLayers[f.id]; 
-        if (!layers) return;
-        const cls = STATE.finished[f.id] ? 'lf-finished' : (STATE.photos[f.id]?.length ? 'lf-partial' : 'lf-empty');
-        layers.forEach(ly => {
-            ly.options.className = cls;
-            if (ly._path) ly._path.setAttribute('class', 'leaflet-interactive ' + cls);
+    // Actualizar estilos polígonos si existen
+    if (STATE.features.length) {
+        STATE.features.forEach(f => {
+            const layers = STATE.leafletLayers[f.id]; 
+            if (!layers) return;
+            const cls = STATE.finished[f.id] ? 'lf-finished' : (STATE.photos[f.id]?.length ? 'lf-partial' : 'lf-empty');
+            layers.forEach(ly => {
+                ly.options.className = cls;
+                if (ly._path) ly._path.setAttribute('class', 'leaflet-interactive ' + cls);
+            });
         });
-    });
 
-    if (STATE.leafletLayers[id]) {
-        STATE.leafletLayers[id].forEach(ly => {
-            ly.options.className = 'lf-selected';
-            if (ly._path) ly._path.setAttribute('class', 'leaflet-interactive lf-selected');
-        });
+        if (STATE.leafletLayers[id]) {
+            STATE.leafletLayers[id].forEach(ly => {
+                ly.options.className = 'lf-selected';
+                if (ly._path) ly._path.setAttribute('class', 'leaflet-interactive lf-selected');
+            });
+        }
     }
 
-    const f = STATE.features.find(x => x.id === id);
-    if (f) {
-        $('mz-num').textContent = String(f.num);
-        $('mz-coords').textContent = `${f.centroid[0].toFixed(5)}, ${f.centroid[1].toFixed(5)}`;
+    const titleEl = $('mz-num');
+    const coordEl = $('mz-coords');
+    const badge = $('mz-badge');
+
+    if (id === 'standalone') {
+        if (titleEl) titleEl.textContent = 'Ofertas Externas';
+        if (coordEl) coordEl.textContent = 'Puntos fuera de polígonos';
+        if (badge) {
+            const count = STATE.photos['standalone']?.length || 0;
+            badge.textContent = `${count} oferta${count !== 1 ? 's' : ''}`;
+            badge.className = 'status-chip partial';
+        }
+    } else {
+        const f = STATE.features.find(x => x.id === id);
+        if (f) {
+            if (titleEl) titleEl.textContent = `Manzana ${f.num}`;
+            if (coordEl) coordEl.textContent = `${f.centroid[0].toFixed(5)}, ${f.centroid[1].toFixed(5)}`;
+        }
     }
 
     const pe = $('panel-empty'); if (pe) pe.style.display = 'none';
@@ -260,7 +276,11 @@ function renderPanelContent() {
               <img src="${ph.dataUrl}" class="photo-thumb">
               <div class="photo-info">
                 <div class="photo-coord">${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</div>
-                <div class="photo-detail">${ph.isOffer ? '<span class="photo-offer-badge">💰 Oferta</span>' : 'Foto normal'}</div>
+                <div class="photo-detail">
+                  ${ph.isOffer ? '<span class="photo-offer-badge">💰 Oferta</span>' : 'Foto normal'}
+                  ${ph.address ? `<br><b>📍 ${ph.address}</b>` : ''}
+                  ${ph.phone ? `<br>📞 ${ph.phone}` : ''}
+                </div>
               </div>
               ${!isF ? `<button class="photo-remove">✕</button>` : ''}`;
             
