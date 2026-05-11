@@ -686,6 +686,26 @@
       background: var(--accent);
     }
 
+    /* Sync Badge */
+    .sync-badge {
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      padding: 0.3rem 0.6rem;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+    .sync-badge.ok { background: var(--done-lt); color: var(--done); border: 1px solid rgba(58, 184, 122, 0.2); }
+    .sync-badge.pending { background: var(--partial-lt); color: var(--partial); border: 1px solid rgba(224, 184, 58, 0.2); }
+    .sync-badge:hover { background: var(--surface3); }
+
+    .spinning { animation: spin-loader 1s linear infinite; display: inline-block; }
+    @keyframes spin-loader { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
     /* Primary CTA in header */
     .btn-cta {
       display: flex;
@@ -1854,6 +1874,9 @@
         </div>
       </div>
 
+      <!-- Sync Status -->
+      <div id="sync-badge" class="sync-badge ok" title="Sincronización">Sincronizado</div>
+
       <!-- CTA primario -->
       <button class="btn-cta" onclick="enterOfferMode()">
         💰 <span>Ingresar Oferta</span>
@@ -1863,6 +1886,12 @@
       <div style="position:relative;">
         <button class="btn-menu" id="btn-menu">⋮</button>
         <div class="dropdown-menu" id="dropdown-menu">
+          <div class="menu-group-label">Sistema</div>
+          <button class="menu-item" id="btn-sync-now">
+            <span class="mi-icon">🔄</span>
+            <span class="mi-label">Sincronizar ahora</span>
+          </button>
+          <div class="menu-divider"></div>
           <div class="menu-group-label">Exportar</div>
           <button class="menu-item" onclick="exportOfertasToExcel(); closeDropdown()">
             <span class="mi-icon">📊</span>
@@ -2026,7 +2055,7 @@
     <p id="loading-msg">Cargando...</p>
   </div>
 
-  <script src="app.js"></script>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 
 </html>
