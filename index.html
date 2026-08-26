@@ -1038,6 +1038,40 @@
       background: var(--blue-lt);
     }
 
+    /* Indicador de autoguardado */
+    .autosave-pill {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      z-index: 1000;
+      align-items: center;
+      gap: 0.35rem;
+      background: var(--surface);
+      border: 1px solid var(--border-hi);
+      border-radius: 20px;
+      padding: 0.32rem 0.7rem;
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      font-weight: 600;
+      box-shadow: var(--shadow);
+      transition: color 0.2s, border-color 0.2s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    .autosave-pill.ok {
+      color: var(--done);
+    }
+
+    .autosave-pill.saving {
+      color: var(--text-muted);
+    }
+
+    .autosave-pill.error {
+      color: var(--danger-txt);
+      border-color: rgba(220, 60, 60, 0.35);
+    }
+
     /* GPS dot */
     .gps-dot {
       width: 16px;
@@ -1936,6 +1970,10 @@
             <span class="mi-icon">⬇</span>
             <span class="mi-label">Exportar KMZ</span>
           </button>
+          <button class="menu-item" id="mi-zip-fotos" onclick="exportPhotosZip(); closeDropdown()" disabled>
+            <span class="mi-icon">🗂️</span>
+            <span class="mi-label">Descargar Fotos (ZIP)</span>
+          </button>
           <button class="menu-item" id="mi-html" onclick="exportHTML(); closeDropdown()" disabled>
             <span class="mi-icon">⬇</span>
             <span class="mi-label">Reporte HTML</span>
@@ -1996,6 +2034,9 @@
       <div id="pin-banner">📍 Toca el punto exacto en el mapa</div>
       <button id="pin-cancel" onclick="cancelPinMode()">✕ Cancelar</button>
       <button id="btn-locate" onclick="toggleLocation()" title="Mi ubicación">📍</button>
+
+      <!-- Indicador de autoguardado -->
+      <div id="autosave-indicator" class="autosave-pill" style="display:none"></div>
 
       <!-- Botón flotante para ABRIR el panel cuando está cerrado -->
       <button id="btn-open-panel" onclick="openPanel()" title="Abrir panel">
