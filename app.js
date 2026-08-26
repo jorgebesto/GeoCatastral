@@ -31,6 +31,8 @@ let locationWatchId = null;
 let locationActive = false;
 let offerMarkers = [];
 let baseLayer = null; // capa base del mapa (cambia con el tema claro/oscuro)
+let lastSaveTs = null;
+let autosaveTimer = null;
 
 const MEM_LIMIT_MB = 400;
 const MEM_WARN_PCT = 0.70;
@@ -332,6 +334,39 @@ function mostrarLoading(msg) {
   $('global-loading').classList.add('show');
 }
 function cerrarLoading() { $('global-loading').classList.remove('show'); }
+
+// ════════════════════════════════════════════════════
+//  INDICADOR DE AUTOGUARDADO
+// ════════════════════════════════════════════════════
+function formatElapsed(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return 'justo ahora';
+  if (mins === 1) return 'hace 1 min';
+  if (mins < 60) return `hace ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  return `hace ${hrs} h`;
+}
+
+function setAutosaveState(state) {
+  const el = $('autosave-indicator');
+  if (!el) return;
+  el.style.display = 'flex';
+  if (state === 'saving') {
+    el.textContent = '💾 Guardando...';
+    el.className = 'autosave-pill saving';
+  } else if (state === 'error') {
+    el.textContent = '⚠ No se pudo guardar';
+    el.className = 'autosave-pill error';
+  } else if (lastSaveTs) {
+    el.textContent = `✓ Guardado ${formatElapsed(lastSaveTs)}`;
+    el.className = 'autosave-pill ok';
+  }
+}
+
+function startAutosaveClock() {
+  if (autosaveTimer) clearInterval(autosaveTimer);
+  autosaveTimer = setInterval(() => setAutosaveState('ok'), 20000);
+}
 
 // ════════════════════════════════════════════════════
 //  MAPA
@@ -721,9 +756,10 @@ function updateProgress() {
     $('prog-count').textContent = fin + '/' + total;
   }
   const hasAny = Object.values(photos).some(pl => (pl || []).length > 0);
-  const miKmz = $('mi-kmz'), miHtml = $('mi-html');
+  const miKmz = $('mi-kmz'), miHtml = $('mi-html'), miZip = $('mi-zip-fotos');
   if (miKmz) miKmz.disabled = !hasAny;
   if (miHtml) miHtml.disabled = !hasAny;
+  if (miZip) miZip.disabled = !hasAny;
 }
 
 // ════════════════════════════════════════════════════
@@ -977,7 +1013,7 @@ async function exportKMZ() {
   try {
     if (!window.JSZip) await cargarScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
 
-    const pins = items.map((ph, i) => `
+    const pins = items.map((ph) => `
   <Placemark>
     <name>${escXml(ph.isOffer ? '💰 Oferta' : '📸 Foto')} — ${escXml(ph.manzana)}</name>
     <description><![CDATA[
@@ -988,7 +1024,7 @@ async function exportKMZ() {
       ${ph.details ? `<b>Detalles:</b> ${ph.details}<br>` : ''}
       <b>Fecha:</b> ${new Date(ph.fecha).toLocaleString('es-CO')}<br>
       <b>Usuario:</b> ${usuarioActual}<br>
-      <img src="fotos/foto_${i}.jpg" width="300"/>
+      <img src="${ph.dataUrl}" width="300"/>
     ]]></description>
     <styleUrl>#${ph.isOffer ? 'oferta' : 'foto'}</styleUrl>
     <Point><coordinates>${ph.lng},${ph.lat},0</coordinates></Point>
@@ -1025,10 +1061,6 @@ async function exportKMZ() {
 
     const zip = new JSZip();
     zip.file('doc.kml', kml);
-    const fotosDir = zip.folder('fotos');
-    for (let i = 0; i < items.length; i++) {
-      fotosDir.file(`foto_${i}.jpg`, items[i].dataUrl.split(',')[1], { base64: true });
-    }
 
     const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     const fname = `CyberGIS_${isMercadoMode ? 'Mercado' : 'Catastral'}_${new Date().toISOString().slice(0, 10)}.kmz`;
@@ -1269,12 +1301,53 @@ function abrirDB() {
   });
 }
 
+// ════════════════════════════════════════════════════
+//  EXPORTAR TODAS LAS FOTOS EN ZIP (organizadas por manzana)
+// ════════════════════════════════════════════════════
+async function exportPhotosZip() {
+  const items = recopilarItems();
+  if (!items.length) { alert('No hay fotos para descargar'); return; }
+  mostrarLoading('Empacando fotos...');
+  try {
+    const zip = new JSZip();
+    const counters = {};
+    items.forEach(ph => {
+      const folderName = ph.fNum ? `Manzana_${ph.fNum}` : 'Ofertas_Externas';
+      const folder = zip.folder(folderName);
+      counters[folderName] = (counters[folderName] || 0) + 1;
+      const n = counters[folderName];
+      const prefix = ph.isOffer ? 'OFERTA' : 'FOTO';
+      const fecha = new Date(ph.fecha).toISOString().slice(0, 10);
+      folder.file(`${prefix}_${n}_${fecha}.jpg`, ph.dataUrl.split(',')[1], { base64: true });
+    });
+    const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    const fname = `Fotos_${isMercadoMode ? 'Mercado' : 'Catastral'}_${new Date().toISOString().slice(0, 10)}.zip`;
+    const url = URL.createObjectURL(content);
+    const a = document.createElement('a'); a.href = url; a.download = fname; a.click();
+    URL.revokeObjectURL(url);
+    cerrarLoading();
+    alert(`✅ ZIP generado\n📸 ${items.length} fotos`);
+  } catch (e) { cerrarLoading(); alert('Error generando ZIP: ' + e.message); console.error(e); }
+}
+
 async function guardarSesion() {
   if (!features.length && isMercadoMode && !photos['standalone']?.length) return;
+  setAutosaveState('saving');
   try {
-    const d = await abrirDB(), tx = d.transaction('sesion', 'readwrite');
-    tx.objectStore('sesion').put({ id: 'sesion_actual', ts: new Date().toISOString(), features, photos, finished, mode: currentMode });
-  } catch (e) { console.warn('Autoguardado falló:', e); }
+    const d = await abrirDB();
+    await new Promise((resolve, reject) => {
+      const tx = d.transaction('sesion', 'readwrite');
+      tx.objectStore('sesion').put({ id: 'sesion_actual', ts: new Date().toISOString(), features, photos, finished, mode: currentMode });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    lastSaveTs = Date.now();
+    setAutosaveState('ok');
+    startAutosaveClock();
+  } catch (e) {
+    console.warn('Autoguardado falló:', e);
+    setAutosaveState('error');
+  }
 }
 
 async function borrarSesionGuardada() {
