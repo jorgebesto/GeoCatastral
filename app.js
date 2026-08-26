@@ -30,6 +30,7 @@ let locationCircle = null;
 let locationWatchId = null;
 let locationActive = false;
 let offerMarkers = [];
+let baseLayer = null; // capa base del mapa (cambia con el tema claro/oscuro)
 
 const MEM_LIMIT_MB = 400;
 const MEM_WARN_PCT = 0.70;
@@ -335,10 +336,25 @@ function cerrarLoading() { $('global-loading').classList.remove('show'); }
 // ════════════════════════════════════════════════════
 //  MAPA
 // ════════════════════════════════════════════════════
+// Devuelve la URL de tiles de CartoDB según el tema activo
+// (oscuro para uso normal, claro para campo con sol).
+function getBaseTileUrl() {
+  const theme = document.documentElement.getAttribute('data-theme');
+  return theme === 'light'
+    ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+}
+
+// Cuando el usuario toca el botón ☀️/🌙 del header (index.html dispara
+// 'themechange'), se actualiza la capa base sin recargar el mapa.
+window.addEventListener('themechange', function () {
+  if (baseLayer) baseLayer.setUrl(getBaseTileUrl());
+});
+
 function launchApp() {
   if (map) { map.remove(); map = null; }
   map = L.map('map', { zoomControl: true });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  baseLayer = L.tileLayer(getBaseTileUrl(), {
     attribution: '© OpenStreetMap © CARTO', maxZoom: 19
   }).addTo(map);
 
