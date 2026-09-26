@@ -361,10 +361,13 @@ function formatElapsed(ts) {
   return `hace ${hrs} h`;
 }
 
-function setAutosaveState(state) {
+let autosaveHideTimer = null;
+function setAutosaveState(state, silencioso) {
   const el = $('autosave-indicator');
   if (!el) return;
   el.style.display = 'flex';
+  const estabaOculto = el.classList.contains('oculto');
+  clearTimeout(autosaveHideTimer);
   if (state === 'saving') {
     el.textContent = '💾 Guardando...';
     el.className = 'autosave-pill saving';
@@ -373,13 +376,15 @@ function setAutosaveState(state) {
     el.className = 'autosave-pill error';
   } else if (lastSaveTs) {
     el.textContent = `✓ Guardado ${formatElapsed(lastSaveTs)}`;
-    el.className = 'autosave-pill ok';
+    el.className = 'autosave-pill ok' + (silencioso && estabaOculto ? ' oculto' : '');
+    // Se desvanece a los 2,5 s para no tapar botones
+    if (!el.classList.contains('oculto')) autosaveHideTimer = setTimeout(() => el.classList.add('oculto'), 2500);
   }
 }
 
 function startAutosaveClock() {
   if (autosaveTimer) clearInterval(autosaveTimer);
-  autosaveTimer = setInterval(() => setAutosaveState('ok'), 20000);
+  autosaveTimer = setInterval(() => setAutosaveState('ok', true), 20000);
 }
 
 // ════════════════════════════════════════════════════
@@ -472,7 +477,9 @@ function refreshMapMarkers() {
     if (ph.address) pc += `<span style="font-size:12px">📍 ${ph.address}</span><br>`;
     if (ph.phone) pc += `<span style="font-size:12px">📞 ${ph.phone}</span><br>`;
     if (ph.fNum) pc += `<span style="font-size:12px">🏘️ Manzana ${ph.fNum}</span><br>`;
-    pc += `<span style="font-family:monospace;font-size:10px;color:#888">${ph.lat.toFixed(6)}, ${ph.lng.toFixed(6)}</span></div>`;
+    if (ph.details) pc += `<span style="font-size:12px">📋 ${ph.details}</span><br>`;
+    pc += `<span style="font-family:monospace;font-size:10px;color:#888">${ph.lat.toFixed(6)}, ${ph.lng.toFixed(6)}</span>`;
+    pc += `<button class="pop-edit" onclick="abrirEdicion('${ph.fId}', ${ph.pIdx})">✏️ Editar ubicación y datos</button></div>`;
     mk.bindPopup(pc);
     mk.on('click', () => {
       if (ph.fId !== 'standalone' && features.length) selectManzana(ph.fId);
@@ -556,6 +563,7 @@ function renderPanelContent() {
         <div class="photo-coord">${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</div>
         <div class="photo-detail">${ph.isOffer ? '<span class="photo-offer-badge">💰 Oferta</span>' : 'Foto normal'}${ph.address ? ' | ' + ph.address.substring(0, 25) : ''}</div>
       </div>
+      <button class="photo-remove photo-edit" onclick="abrirEdicion('${id}', ${idx})" title="Editar ubicación y datos">✏️</button>
       ${!isF ? `<button class="photo-remove" onclick="removePhoto(${idx})">✕</button>` : ''}`;
     cont.appendChild(card);
   });
@@ -586,6 +594,7 @@ function renderStandalonePanel() {
         <div class="photo-coord">${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</div>
         <div class="photo-detail"><span class="photo-offer-badge">💰 Oferta</span>${ph.address ? ' | ' + ph.address.substring(0, 25) : ''}</div>
       </div>
+      <button class="photo-remove photo-edit" onclick="abrirEdicion('standalone', ${idx})" title="Editar ubicación y datos">✏️</button>
       <button class="photo-remove" onclick="removeStandalonePhoto(${idx})">✕</button>`;
     cont.appendChild(card);
   });
@@ -663,6 +672,7 @@ function cancelPinMode(keep) {
   $('pin-banner').style.display = 'none'; $('pin-cancel').style.display = 'none';
   if (pinMapClickHandler) { map.off('click', pinMapClickHandler); pinMapClickHandler = null; }
   if (!keep) pendingLatLng = null;
+  if (editRelocating && !keep) { editRelocating = false; $('edit-modal').classList.add('show'); }
 }
 
 function openPhotoSourceModal() { $('photo-source-modal').classList.add('show'); }
@@ -734,6 +744,186 @@ function saveOfferData() {
   if (lastPhotoId.featureId !== 'standalone' && features.length) selectManzana(lastPhotoId.featureId);
   else { currentId = 'standalone'; renderStandalonePanel(); }
 }
+
+// ════════════════════════════════════════════════════
+//  EDITAR REGISTRO (ubicación y datos de fotos / ofertas)
+// ════════════════════════════════════════════════════
+let editRef = null;          // { key, idx } del registro que se edita
+let editRelocating = false;  // true mientras se elige la nueva ubicación en el mapa
+
+(function estilosEdicion() {
+  const st = document.createElement('style');
+  st.id = 'gc-edit-styles';
+  st.textContent = `
+    /* Aviso de guardado: arriba al centro y se desvanece solo */
+    .autosave-pill { top: 12px !important; bottom: auto !important; left: 50% !important; transform: translateX(-50%); transition: opacity .4s, color .2s, border-color .2s; }
+    .autosave-pill.oculto { opacity: 0; }
+    .photo-remove.photo-edit { background: var(--surface3, rgba(255,255,255,.06)); border-color: var(--border-hi, rgba(255,255,255,.18)); color: var(--text, #fff); margin-right: .35rem; }
+    .edit-coords { display: flex; gap: .5rem; }
+    .edit-coords .form-input { font-family: var(--mono, monospace); font-size: .78rem; min-width: 0; }
+    .edit-loc-btns { display: flex; gap: .4rem; margin-top: .55rem; flex-wrap: wrap; }
+    .edit-loc-btns .btn-sm { flex: 1; justify-content: center; }
+    #edit-modal .modal-box { max-height: 90vh; overflow-y: auto; }
+    #edit-modal .modal-actions .btn-sm { flex: 1; justify-content: center; }
+    .edit-hint { font-size: .68rem; color: var(--text-muted, #999); margin-top: .4rem; }
+    .pop-edit { display: block; width: 100%; margin-top: 8px; padding: 7px 8px; border-radius: 7px; border: 1px solid #E0B83A; background: rgba(224,184,58,.12); color: inherit; font-weight: 700; font-size: 12px; cursor: pointer; }
+  `;
+  document.head.appendChild(st);
+})();
+
+function crearModalEdicion() {
+  if ($('edit-modal')) return;
+  const m = document.createElement('div');
+  m.id = 'edit-modal';
+  m.className = 'modal-center';
+  m.onclick = () => cerrarEdicion();
+  m.innerHTML = `
+    <div class="modal-box" onclick="event.stopPropagation()">
+      <h3 id="edit-title">✏️ Editar registro</h3>
+      <div class="form-field">
+        <label class="field-label">Ubicación (latitud, longitud)</label>
+        <div class="edit-coords">
+          <input class="form-input" id="edit-lat" type="text" autocomplete="off" placeholder="Latitud">
+          <input class="form-input" id="edit-lng" type="text" autocomplete="off" placeholder="Longitud">
+        </div>
+        <div class="edit-loc-btns">
+          <button class="btn-sm ghost" onclick="moverEnMapa()">🗺️ Tocar en el mapa</button>
+          <button class="btn-sm ghost" id="edit-gps-btn" onclick="usarMiGPS()">📡 Usar mi GPS</button>
+        </div>
+        <p class="edit-hint" id="edit-hint"></p>
+      </div>
+      <div class="form-field">
+        <label class="field-label">Dirección</label>
+        <input class="form-input" id="edit-address" type="text" placeholder="Calle 123 # 45-67">
+      </div>
+      <div class="form-field">
+        <label class="field-label">Teléfono / Contacto</label>
+        <input class="form-input" id="edit-phone" type="text" placeholder="+57 300 000 0000">
+      </div>
+      <div class="form-field">
+        <label class="field-label">Detalles</label>
+        <textarea class="form-textarea" id="edit-details" placeholder="Precio, estado, área, etc..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-sm ghost" onclick="cerrarEdicion()">Cancelar</button>
+        <button class="btn-sm accent" onclick="guardarEdicion()">Guardar cambios</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+}
+
+// Las claves de photos pueden ser el id numérico de la manzana o 'standalone'
+function resolverClave(key) {
+  if (key === 'standalone') return 'standalone';
+  const f = features.find(x => String(x.id) === String(key));
+  return f ? f.id : key;
+}
+
+function abrirEdicion(key, idx) {
+  key = resolverClave(key);
+  const ph = (photos[key] || [])[idx];
+  if (!ph) return;
+  crearModalEdicion();
+  editRef = { key, idx };
+  if (map) map.closePopup();
+  $('edit-title').textContent = ph.isOffer ? '✏️ Editar oferta' : '✏️ Editar foto';
+  $('edit-lat').value = ph.lat.toFixed(7);
+  $('edit-lng').value = ph.lng.toFixed(7);
+  $('edit-address').value = ph.address || '';
+  $('edit-phone').value = ph.phone || '';
+  $('edit-details').value = ph.details || '';
+  $('edit-hint').textContent = '';
+  $('edit-modal').classList.add('show');
+}
+
+function cerrarEdicion() {
+  if (editRelocating) { editRelocating = false; cancelPinMode(true); }
+  const m = $('edit-modal'); if (m) m.classList.remove('show');
+  editRef = null;
+}
+
+function leerCoordsEdicion() {
+  const lat = parseFloat(String($('edit-lat').value).trim().replace(',', '.'));
+  const lng = parseFloat(String($('edit-lng').value).trim().replace(',', '.'));
+  if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+}
+
+function moverEnMapa() {
+  if (!editRef || !map) return;
+  const c = leerCoordsEdicion();
+  $('edit-modal').classList.remove('show');
+  closePanel();
+  if (c) map.setView([c.lat, c.lng], Math.max(map.getZoom(), 17));
+  cancelPinMode(true);
+  editRelocating = true;
+  pinModeActive = true;
+  $('pin-banner').textContent = '✏️ Toca la nueva ubicación';
+  $('pin-banner').style.display = 'block';
+  $('pin-cancel').style.display = 'block';
+  pinMapClickHandler = e => {
+    if (!editRelocating) return;
+    editRelocating = false;
+    cancelPinMode(true);
+    $('edit-lat').value = e.latlng.lat.toFixed(7);
+    $('edit-lng').value = e.latlng.lng.toFixed(7);
+    $('edit-hint').textContent = '📍 Nueva ubicación elegida en el mapa. Toca "Guardar cambios" para confirmar.';
+    $('edit-modal').classList.add('show');
+  };
+  map.once('click', pinMapClickHandler);
+}
+
+function usarMiGPS() {
+  if (!navigator.geolocation) { alert('Este dispositivo no permite usar el GPS.'); return; }
+  const btn = $('edit-gps-btn');
+  btn.disabled = true; btn.textContent = '📡 Buscando...';
+  navigator.geolocation.getCurrentPosition(pos => {
+    $('edit-lat').value = pos.coords.latitude.toFixed(7);
+    $('edit-lng').value = pos.coords.longitude.toFixed(7);
+    $('edit-hint').textContent = `📡 Ubicación del GPS (precisión ±${Math.round(pos.coords.accuracy)} m). Toca "Guardar cambios" para confirmar.`;
+    btn.disabled = false; btn.textContent = '📡 Usar mi GPS';
+  }, err => {
+    alert('No se pudo obtener la ubicación: ' + err.message);
+    btn.disabled = false; btn.textContent = '📡 Usar mi GPS';
+  }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+}
+
+function guardarEdicion() {
+  if (!editRef) return;
+  const lista = photos[editRef.key];
+  const ph = lista && lista[editRef.idx];
+  if (!ph) { cerrarEdicion(); return; }
+  const c = leerCoordsEdicion();
+  if (!c) { alert('Revisa la ubicación: escribe la latitud y la longitud en grados decimales (ej. 4.62926 y -74.18297).'); return; }
+
+  ph.lat = c.lat; ph.lng = c.lng;
+  ph.address = $('edit-address').value.trim();
+  ph.phone = $('edit-phone').value.trim();
+  ph.details = $('edit-details').value.trim();
+  ph.editado = new Date().toISOString();
+
+  // Si una oferta se movió a otra manzana (o fuera de todas), se reasigna
+  let destino = editRef.key;
+  if (ph.isOffer && features.length) {
+    const found = features.find(f => f.rings.some(ring => isPointInPolygon([c.lat, c.lng], ring)));
+    destino = found ? found.id : 'standalone';
+  }
+  if (String(destino) !== String(editRef.key)) {
+    lista.splice(editRef.idx, 1);
+    if (!photos[destino]) photos[destino] = [];
+    photos[destino].push(ph);
+  }
+
+  $('edit-modal').classList.remove('show');
+  editRef = null;
+  refreshMapMarkers(); updateProgress(); guardarSesion();
+  if (destino !== 'standalone' && features.length) selectManzana(destino);
+  else { currentId = 'standalone'; renderStandalonePanel(); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !editRelocating && $('edit-modal')?.classList.contains('show')) cerrarEdicion();
+});
 
 // ════════════════════════════════════════════════════
 //  GEOLOCALIZACIÓN
