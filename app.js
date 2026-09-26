@@ -385,13 +385,19 @@ function startAutosaveClock() {
 // ════════════════════════════════════════════════════
 //  MAPA
 // ════════════════════════════════════════════════════
-// Devuelve la URL de tiles de CartoDB según el tema activo
-// (oscuro para uso normal, claro para campo con sol).
+// API key de CARTO para basemaps. Deja este espacio para poner la clave real luego.
+const CARTO_API_KEY = 'cb1_3zj1_1_76f0df2a20270c1aceab2525';
+
+// Devuelve la URL de tiles de CARTO según el tema activo.
+// Si hay una API key real, se adjunta; si no, funciona con el placeholder vacío.
 function getBaseTileUrl() {
   const theme = document.documentElement.getAttribute('data-theme');
-  return theme === 'light'
-    ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  const style = theme === 'light' ? 'light_all' : 'dark_all';
+  const apiKeyParam = CARTO_API_KEY && CARTO_API_KEY !== 'cb1_3zj1_1_76f0df2a20270c1aceab2525'
+    ? `?api_key=${encodeURIComponent(CARTO_API_KEY)}`
+    : '';
+
+  return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png${apiKeyParam}`;
 }
 
 // Cuando el usuario toca el botón ☀️/🌙 del header (index.html dispara
