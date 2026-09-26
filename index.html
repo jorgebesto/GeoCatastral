@@ -13,6 +13,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
   <title>Registro Catastral | Estudio de Mercado</title>
+  <meta name="description" content="Registro fotográfico georreferenciado por manzanas y estudio de mercado inmobiliario en campo.">
+
+  <!-- PWA: manifiesto, íconos y colores de la barra del sistema -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="48x48" href="icons/favicon-48.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#191d26">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="GeoCatastral">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="application-name" content="GeoCatastral">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link
@@ -2151,6 +2164,15 @@
     applyThemeIcon(document.documentElement.getAttribute('data-theme') || 'dark');
   </script>
   <script src="app.js"></script>
+  <script>
+    // Registro del Service Worker (instalación como app y uso sin internet)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js', { scope: './' })
+          .catch(function (err) { console.warn('No se pudo registrar el Service Worker:', err); });
+      });
+    }
+  </script>
 </body>
 
 </html>
