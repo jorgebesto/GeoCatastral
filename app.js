@@ -385,33 +385,52 @@ function startAutosaveClock() {
 // ════════════════════════════════════════════════════
 //  MAPA
 // ════════════════════════════════════════════════════
-// API key de CARTO para basemaps. Deja este espacio para poner la clave real luego.
+// API key de CARTO para basemaps (opcional).
 const CARTO_API_KEY = 'cb1_3zj1_1_76f0df2a20270c1aceab2525';
 
-// Devuelve la URL de tiles de CARTO según el tema activo.
-// Si hay una API key real, se adjunta; si no, funciona con el placeholder vacío.
+// Devuelve la URL de tiles de basemap según el tema actual.
 function getBaseTileUrl() {
   const theme = document.documentElement.getAttribute('data-theme');
-  const style = theme === 'light' ? 'light_all' : 'dark_all';
-  const apiKeyParam = CARTO_API_KEY && CARTO_API_KEY !== 'cb1_3zj1_1_76f0df2a20270c1aceab2525'
-    ? `?api_key=${encodeURIComponent(CARTO_API_KEY)}`
-    : '';
+  const isLight = theme === 'light';
+  const key = (CARTO_API_KEY || '').trim();
 
-  return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png${apiKeyParam}`;
+  if (key && key !== 'TU_API_KEY_AQUI') {
+    const style = isLight ? 'light_all' : 'dark_all';
+    return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png?key=${encodeURIComponent(key)}`;
+  }
+
+  // Fallback visual si se borra temporalmente la clave.
+  return isLight
+    ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+}
+
+function applyBaseMapTheme() {
+  if (!map) return;
+  const url = getBaseTileUrl();
+  if (baseLayer) {
+    baseLayer.setUrl(url);
+  } else {
+    baseLayer = L.tileLayer(url, {
+      attribution: '© OpenStreetMap contributors © CARTO', maxZoom: 19
+    }).addTo(map);
+  }
+  map.invalidateSize();
 }
 
 // Cuando el usuario toca el botón ☀️/🌙 del header (index.html dispara
 // 'themechange'), se actualiza la capa base sin recargar el mapa.
 window.addEventListener('themechange', function () {
-  if (baseLayer) baseLayer.setUrl(getBaseTileUrl());
+  applyBaseMapTheme();
+});
+document.addEventListener('themechange', function () {
+  applyBaseMapTheme();
 });
 
 function launchApp() {
   if (map) { map.remove(); map = null; }
   map = L.map('map', { zoomControl: true });
-  baseLayer = L.tileLayer(getBaseTileUrl(), {
-    attribution: '© OpenStreetMap © CARTO', maxZoom: 19
-  }).addTo(map);
+  applyBaseMapTheme();
 
   const bounds = []; leafletLayers = {};
   features.forEach(f => {
@@ -1099,47 +1118,56 @@ async function exportKMZ() {
 async function exportHTML() {
   const items = recopilarItems();
   if (!items.length) { alert('No hay datos para exportar'); return; }
+
   mostrarLoading('Generando reporte interactivo...');
   try {
-    const fechaStr = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const fechaStr = new Date().toLocaleDateString('es-CO', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    });
     const totalO = items.filter(x => x.isOffer).length;
     const totalF = items.filter(x => !x.isOffer).length;
     const finCnt = features.filter(f => finished[f.id]).length;
 
     const mapData = JSON.stringify(items.map(ph => ({
-      lat: ph.lat, lng: ph.lng, isOffer: !!ph.isOffer,
+      lat: ph.lat,
+      lng: ph.lng,
+      isOffer: !!ph.isOffer,
       title: ph.manzana || 'Registro',
-      address: ph.address || '', phone: ph.phone || '',
+      address: ph.address || '',
+      phone: ph.phone || '',
       details: ph.details || '',
       fecha: new Date(ph.fecha).toLocaleString('es-CO'),
       img: ph.dataUrl
     })));
 
     const polData = JSON.stringify(features.map(f => ({
-      num: f.num, rings: f.rings,
+      num: f.num,
+      rings: f.rings,
       estado: finished[f.id] ? 'fin' : (photos[f.id]?.length ? 'partial' : 'empty'),
       fotos: (photos[f.id] || []).length
     })));
 
     const cards = items.map((ph, i) => `
-    <div class="card ${ph.isOffer ? 'offer' : 'photo'}" id="card-${i}" onclick="flyTo(${i})">
-      <div class="cimg">
-        <img src="${ph.dataUrl}" loading="lazy" alt="">
-        <span class="badge">${ph.isOffer ? '💰 Oferta' : '📸 Foto'}</span>
+      <div class="card ${ph.isOffer ? 'offer' : 'photo'}" id="card-${i}" onclick="flyTo(${i})">
+        <div class="cimg">
+          <img src="${ph.dataUrl}" loading="lazy" alt="">
+          <span class="badge">${ph.isOffer ? '💰 Oferta' : '📸 Foto'}</span>
+        </div>
+        <div class="cbody">
+          <div class="ctitle">${ph.manzana || 'Sin zona'}</div>
+          ${ph.address ? `<div class="rw"><span>📍</span><span>${ph.address}</span></div>` : ''}
+          ${ph.phone ? `<div class="rw"><span>📞</span><span>${ph.phone}</span></div>` : ''}
+          ${ph.details ? `<div class="rw"><span>📋</span><span>${ph.details}</span></div>` : ''}
+          <div class="rw dim"><span>📌</span><span>${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</span></div>
+        </div>
       </div>
-      <div class="cbody">
-        <div class="ctitle">${ph.manzana || 'Sin zona'}</div>
-        ${ph.address ? `<div class="rw"><span>📍</span><span>${ph.address}</span></div>` : ''}
-        ${ph.phone ? `<div class="rw"><span>📞</span><span>${ph.phone}</span></div>` : ''}
-        ${ph.details ? `<div class="rw"><span>📋</span><span>${ph.details}</span></div>` : ''}
-        <div class="rw dim"><span>📌</span><span>${ph.lat.toFixed(5)}, ${ph.lng.toFixed(5)}</span></div>
-      </div>
-    </div>`).join('');
+    `).join('');
 
     const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>CyberGIS — Reporte Interactivo</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
@@ -1175,20 +1203,16 @@ html,body{height:100%;background:var(--bg);color:var(--txt);font-family:'DM Sans
 .ctitle{font-size:.78rem;font-weight:700;margin-bottom:.3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rw{font-size:.63rem;color:var(--mut);display:flex;gap:.3rem;margin-bottom:.18rem;align-items:flex-start;line-height:1.4}
 .rw.dim{color:#555d75}.rw span:first-child{flex-shrink:0}
-/* Popup personalizado Leaflet */
 .leaflet-popup-content-wrapper{background:var(--s2)!important;color:var(--txt)!important;border:1px solid rgba(255,255,255,.12)!important;border-radius:12px!important;box-shadow:0 8px 32px rgba(0,0,0,.5)!important}
 .leaflet-popup-tip{background:var(--s2)!important}
 .pop{font-family:'DM Sans',sans-serif;min-width:200px}
 .pop-title{font-size:.85rem;font-weight:700;margin-bottom:.5rem}
 .pop-img{width:100%;border-radius:8px;aspect-ratio:4/3;object-fit:cover;cursor:zoom-in;margin-top:.5rem;display:block}
 .pop-row{font-size:.72rem;color:var(--mut);margin-bottom:.25rem;display:flex;gap:.35rem;align-items:flex-start}
-/* Viewer pantalla completa */
 #viewer{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.95);align-items:center;justify-content:center;cursor:zoom-out}
 #viewer.on{display:flex}
 #viewer img{max-width:95vw;max-height:95vh;border-radius:8px}
-/* Tooltip manzanas */
 .tip{background:var(--s2)!important;border:1px solid rgba(255,255,255,.12)!important;color:var(--txt)!important;font-family:'DM Sans',sans-serif!important;font-size:11px!important;border-radius:6px!important}
-/* Mobile */
 @media(max-width:700px){
   html,body{overflow:auto}
   .app{height:auto}
@@ -1228,67 +1252,95 @@ const DATA = ${mapData};
 const POLS = ${polData};
 let activeIdx = null;
 const map = L.map('map');
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,attribution:'© CARTO'}).addTo(map);
-// Polígonos
-const PCOLS = {fin:'#7c5fe6',partial:'#e0b83a',empty:'#E05C3A'};
+const CARTO_API_KEY = 'cb1_3zj1_1_76f0df2a20270c1aceab2525';
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=' + encodeURIComponent(CARTO_API_KEY), { maxZoom: 19, attribution: '© OpenStreetMap contributors © CARTO' }).addTo(map);
+
+const PCOLS = { fin: '#7c5fe6', partial: '#e0b83a', empty: '#E05C3A' };
 POLS.forEach(p => p.rings.forEach(ring => {
-  const col=PCOLS[p.estado]||'#E05C3A';
-  L.polygon(ring,{color:col,fillColor:col,fillOpacity:.2,weight:1.5})
-   .bindTooltip('Manzana '+p.num,{className:'tip'}).addTo(map);
+  const col = PCOLS[p.estado] || '#E05C3A';
+  L.polygon(ring, { color: col, fillColor: col, fillOpacity: 0.2, weight: 1.5 })
+   .bindTooltip('Manzana ' + p.num, { className: 'tip' })
+   .addTo(map);
 }));
-// Marcadores
-const MKS=[];
-const BOUNDS=[];
-DATA.forEach((ph,i) => {
-  const col=ph.isOffer?'#e0b83a':'#E05C3A';
-  const svg='<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="10" fill="'+col+'" stroke="#fff" stroke-width="2"/>'+(ph.isOffer?'<text x="12" y="16" text-anchor="middle" fill="#111" font-size="10" font-weight="800">$</text>':'<circle cx="12" cy="12" r="4" fill="#fff"/>')+'</svg>';
-  const icon=L.divIcon({html:svg,className:'',iconSize:[26,26],iconAnchor:[13,13]});
-  const mk=L.marker([ph.lat,ph.lng],{icon,zIndexOffset:500}).addTo(map);
-  mk.bindPopup('<div class="pop"><div class="pop-title" style="color:'+col+'">'+(ph.isOffer?'💰 Oferta':'📸 Foto')+'</div><div style="font-size:.72rem;font-weight:600;margin-bottom:.3rem">'+ph.title+'</div>'+(ph.address?'<div class="pop-row"><span>📍</span><span>'+ph.address+'</span></div>':'')+(ph.phone?'<div class="pop-row"><span>📞</span><span>'+ph.phone+'</span></div>':'')+(ph.details?'<div class="pop-row"><span>📋</span><span>'+ph.details+'</span></div>':'')+'<div class="pop-row" style="opacity:.6"><span>🕐</span><span>'+ph.fecha+'</span></div><img src="'+ph.img+'" class="pop-img" onclick="openViewer(this.src)"></div>',{maxWidth:260});
-  mk.on('click',()=>setActive(i));
-  MKS.push(mk); BOUNDS.push([ph.lat,ph.lng]);
+
+const MKS = [];
+const BOUNDS = [];
+DATA.forEach((ph, i) => {
+  const col = ph.isOffer ? '#e0b83a' : '#E05C3A';
+  const svg = '<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="10" fill="' + col + '" stroke="#fff" stroke-width="2"/>' + (ph.isOffer ? '<text x="12" y="16" text-anchor="middle" fill="#111" font-size="10" font-weight="800">$</text>' : '<circle cx="12" cy="12" r="4" fill="#fff"/>') + '</svg>';
+  const icon = L.divIcon({ html: svg, className: '', iconSize: [26, 26], iconAnchor: [13, 13] });
+  const mk = L.marker([ph.lat, ph.lng], { icon, zIndexOffset: 500 }).addTo(map);
+  mk.bindPopup('<div class="pop"><div class="pop-title" style="color:' + col + '">' + (ph.isOffer ? '💰 Oferta' : '📸 Foto') + '</div><div style="font-size:.72rem;font-weight:600;margin-bottom:.3rem">' + ph.title + '</div>' + (ph.address ? '<div class="pop-row"><span>📍</span><span>' + ph.address + '</span></div>' : '') + (ph.phone ? '<div class="pop-row"><span>📞</span><span>' + ph.phone + '</span></div>' : '') + (ph.details ? '<div class="pop-row"><span>📋</span><span>' + ph.details + '</span></div>' : '') + '<div class="pop-row" style="opacity:.6"><span>🕐</span><span>' + ph.fecha + '</span></div><img src="' + ph.img + '" class="pop-img" onclick="openViewer(this.src)"></div>', { maxWidth: 260 });
+  mk.on('click', () => setActive(i));
+  MKS.push(mk);
+  BOUNDS.push([ph.lat, ph.lng]);
 });
-function initMap(){
-  if(BOUNDS.length) map.fitBounds(L.latLngBounds(BOUNDS),{padding:[40,40]});
-  else map.setView([4.6097,-74.0817],13);
+
+function initMap() {
+  if (BOUNDS.length) map.fitBounds(L.latLngBounds(BOUNDS), { padding: [40, 40] });
+  else map.setView([4.6097, -74.0817], 13);
   map.invalidateSize();
 }
-// En móvil el layout tarda en estabilizarse — forzar altura y esperar antes de inicializar
-if(window.innerWidth<=700){
-  var mapEl=document.getElementById('map');
-  mapEl.style.height='60vw';
-  mapEl.style.minHeight='220px';
-  setTimeout(initMap,300);
+
+if (window.innerWidth <= 700) {
+  const mapEl = document.getElementById('map');
+  mapEl.style.height = '60vw';
+  mapEl.style.minHeight = '220px';
+  setTimeout(initMap, 300);
 } else {
   initMap();
 }
-function setActive(i){
-  if(activeIdx!==null){
-    const prev=document.getElementById('card-'+activeIdx);
-    if(prev) prev.classList.remove('active');
+
+function setActive(i) {
+  if (activeIdx !== null) {
+    const prev = document.getElementById('card-' + activeIdx);
+    if (prev) prev.classList.remove('active');
   }
-  activeIdx=i;
-  const card=document.getElementById('card-'+i);
-  if(card){card.classList.add('active');card.scrollIntoView({behavior:'smooth',block:'nearest'});}
+  activeIdx = i;
+  const card = document.getElementById('card-' + i);
+  if (card) {
+    card.classList.add('active');
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
-function flyTo(i){
-  map.flyTo([DATA[i].lat,DATA[i].lng],18,{duration:1.2});
-  setTimeout(()=>{MKS[i].openPopup();setActive(i);},1000);
+
+function flyTo(i) {
+  map.flyTo([DATA[i].lat, DATA[i].lng], 18, { duration: 1.2 });
+  setTimeout(() => {
+    MKS[i].openPopup();
+    setActive(i);
+  }, 1000);
 }
-function openViewer(src){document.getElementById('vimg').src=src;document.getElementById('viewer').classList.add('on');}
-document.addEventListener('keydown',e=>{if(e.key==='Escape')document.getElementById('viewer').classList.remove('on');});
-<\/script>
-</body></html>`;
+
+function openViewer(src) {
+  document.getElementById('vimg').src = src;
+  document.getElementById('viewer').classList.add('on');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('viewer').classList.remove('on');
+});
+</script>
+</body>
+</html>`;
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const fname = `CyberGIS_Interactivo_${new Date().toISOString().slice(0, 10)}.html`;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = fname;
     document.body.appendChild(a); a.click();
-    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 500);
+
     cerrarLoading();
     alert(`✅ Reporte HTML Interactivo generado\n🗺️ Mapa con ${items.length} puntos · Galería de fotos incluida`);
-  } catch (e) { cerrarLoading(); console.error(e); alert('Error HTML: ' + e.message); }
+  } catch (e) {
+    cerrarLoading();
+    console.error(e);
+    alert('Error HTML: ' + e.message);
+  }
 }
 
 // ════════════════════════════════════════════════════
