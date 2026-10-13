@@ -1,0 +1,75 @@
+Datos Básicos - Certificado de Tradición y Libertad
+Fecha: 05/10/2026
+Hora: 09:12 AM
+No. Consulta: 000000000
+N° Matrícula Inmobiliaría: 008-2077
+Referencia Catastral: 051720001000000260020000000000
+Departamento: ANTIOQUIA
+Referencia Catastral Anterior: 1555
+Municipio: CHIGORODO
+Cédula Catastral:
+Vereda: PIEDRAS BLANCAS DE POLINES
+Nupre: ABR0001DOBD
+Dirección Actual del Inmueble: BUENAVISTA
+Direcciones Anteriores:
+Determinacion:
+Destinacion economica:
+Modalidad:
+Fecha de Apertura del Folio: 27/07/1982
+Tipo de Instrumento: SIN INFORMACION
+Fecha de Instrumento: 27/07/1982
+Estado Folio: ACTIVO
+Matrícula(s) Matriz:
+Matrícula(s) Derivada(s):
+Tipo de Predio: Sin información
+Alertas en protección, restitución y formalización
+Alertas en protección, restitución y formalización
+Alertas comunicaciones, suspensiones y acumulaciones procesales
+ORIGEN
+DESCRIPCIÓN
+FECHA
+DOCUMENTO
+Propietarios
+NÚMERO DOCUMENTO
+TIPO IDENTIFICACIÓN
+NOMBRES-APELLIDOS (RAZÓN SOCIAL)
+PARTICIPACIÓN
+12345678
+CÉDULA CIUDADANÍA
+PROPIETARIO DE EJEMPLO
+Complementaciones
+Cabidad y Linderos
+18 HS. Y 5.000 M2. ## PUNTO DE PARTIDA:.- SE TOMO COMO PUNTO DE PARTIDA EL # 8, DONDE CONCURREN LAS COLINDANCIAS DE BALDIOS NACIONALES Y EL PETICIONARIO. COLINDA ASI: OESTE: DEL PUNTO 8 AL 10-M EN 230 MTS. NORTE: QDA. LA LINDA DE POR MEDIO, DEL PUNTO 10-M AL 23 EN 540 MTS. ESTE:SUR Y OESTE: CON BALDIOS NACIONALES DEL PUNTO 23 AL 8 EN 1.176 MTS Y ENCIERRA
+Linderos Tecnicamente Definidos
+Area Y Coeficiente
+Area de terreno Hectareas: Metros: Area Centimietros:
+Area Privada Metros: Centimietros:
+Area Construida Metros: Centimietros:
+Coeficiente: %
+Salvedades
+NÚMERO DE ANOTACIÓN
+NÚMERO DE CORRECCIÓN
+RADICACIÓN DE ANOTACIÓN
+FECHA DE SALVEDAD
+RADICACIÓN DE SALVEDAD
+DESCRIPCIÓN SALVEDAD FOLIO
+COMENTARIO SALVEDAD FOLIO
+0
+1
+18/04/2021
+ICARE-2021
+SE ACTUALIZA FICHA CATASTRAL, CON LA SUMINISTRADA POR CATASTRO DEPARTAMENTAL ANTIOQUIA, RES. 0000000068741 PROFERIDA POR ESA ENTIDAD, RES. NO. 09089 DE 29/10/2020 EXPEDIDA POR LA S.N.R.
+0
+2
+07/12/2024
+ICARE-2024
+SE ACTUALIZA/INCLUYE FICHA CATASTRAL Y/O NUPRE, CON EL SUMINISTRADO POR EL GC ANTIOQUIA, RES. 2024060248866 DEL 21/08/2024 PROFERIDA POR ESA ENTIDAD, RES. NO. 09089 DE 29/10/2020 EXPEDIDA POR LA S.N.R.
+Trámites en Curso
+RADICADO
+TIPO
+FECHA
+ENTIDAD ORIGEN
+CIUDAD
+IMPORTANTE
+Tenga en cuenta que si usted está consultando un predio que ha sido objeto de venta(s) parciales y tiene múltiples propietarios, el resultado de la consulta reflejará únicamente el propietario o los propietarios que intervinieron en la última venta parcial.
+En caso de constitución de usufructo el sistema reflejará como propietario a los beneficiarios de dicho acto.
